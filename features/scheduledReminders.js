@@ -1,8 +1,8 @@
 const { EmbedBuilder, ChannelType } = require('discord.js');
 const { getDelayUntilNextScheduledTime, getTimeWithTimezoneInfo, formatTimeInTimeZone } = require('../utils/timezoneUtils');
 
-// Scheduled reminder times (24-hour format)
-const REMINDERS = [
+// Scheduled reminder variants (24-hour format)
+const REMINDER_VARIANTS = [
     {
         name: 'Daily Progress Reminder',
         hour: 21,
@@ -25,7 +25,38 @@ Post your final updates now and celebrate your achievements before we wrap up! �
         color: '#FF6B6B',
         channelId: '1304853237471510639',
     },
+    {
+        name: 'Progress Reminder Boost',
+        hour: 21,
+        minute: 30,
+        message: '🚀 Progress Check-In 🚀',
+        description: `Hey Belmonts! Take a minute to log what you built today.\nEvery small step counts, so share your wins and keep the momentum going! 💪✨`,
+        color: '#4ECDC4',
+        channelId: '1304853237471510639',
+    },
+    {
+        name: 'Daily Wins Reminder',
+        hour: 21,
+        minute: 30,
+        message: '🏆 Daily Wins Reminder 🏆',
+        description: `Belmonts, what did you finish today?\nPost your progress, celebrate your wins, and keep building your streak! 🔥`,
+        color: '#FFA94D',
+        channelId: '1304853237471510639',
+    },
+    {
+        name: 'Byte Bash Blitz Check',
+        hour: 21,
+        minute: 30,
+        message: '⚡ Byte Bash Blitz Check ⚡',
+        description: `Time for a quick check-in, Belmonts!\nShare what you learned, what you solved, and what you want to tackle next. 🌟`,
+        color: '#845EF7',
+        channelId: '1304853237471510639',
+    },
 ];
+
+function pickRandomReminderVariant() {
+    return REMINDER_VARIANTS[Math.floor(Math.random() * REMINDER_VARIANTS.length)];
+}
 
 /**
  * Find a channel by ID or name
@@ -55,18 +86,20 @@ function createReminderEmbed(reminder) {
 /**
  * Send scheduled reminder
  */
-async function sendScheduledReminder(client, reminder) {
+async function sendScheduledReminder(client) {
+    let selectedReminder = null;
     try {
-        console.log(`⏰ Sending scheduled reminder: "${reminder.name}"`);
+        selectedReminder = pickRandomReminderVariant();
+        console.log(`⏰ Sending scheduled reminder: "${selectedReminder.name}"`);
 
-        const channel = findTargetChannel(client, reminder);
+        const channel = findTargetChannel(client, selectedReminder);
 
         if (!channel) {
-            console.warn(`⚠ Channel ${reminder.channelId} not found for "${reminder.name}"`);
+            console.warn(`⚠ Channel ${selectedReminder.channelId} not found for "${selectedReminder.name}"`);
             return;
         }
 
-        const embed = createReminderEmbed(reminder);
+        const embed = createReminderEmbed(selectedReminder);
 
         await channel.send({
             embeds: [embed],
@@ -74,30 +107,30 @@ async function sendScheduledReminder(client, reminder) {
 
         console.log(`✓ Reminder sent in #${channel.name}`);
     } catch (error) {
-        console.error(`Error sending reminder "${reminder.name}":`, error);
+        console.error(`Error sending reminder "${selectedReminder?.name || 'random reminder'}":`, error);
     }
 }
 
 /**
  * Schedule a reminder to run at a specific time daily
  */
-function scheduleReminder(client, reminder) {
-    const msUntilReminder = getDelayUntilNextScheduledTime(reminder.hour, reminder.minute);
+function scheduleReminder(client, reminderSchedule) {
+    const msUntilReminder = getDelayUntilNextScheduledTime(reminderSchedule.hour, reminderSchedule.minute);
     const hoursUntil = Math.floor(msUntilReminder / (1000 * 60 * 60));
     const minutesUntil = Math.floor((msUntilReminder % (1000 * 60 * 60)) / (1000 * 60));
 
     console.log(
-        `📅 "${reminder.name}" scheduled in ${hoursUntil}h ${minutesUntil}m ` +
-        `(${reminder.hour.toString().padStart(2, '0')}:${reminder.minute.toString().padStart(2, '0')} Asia/Kolkata)`
+        `📅 Random daily reminder scheduled in ${hoursUntil}h ${minutesUntil}m ` +
+        `(${reminderSchedule.hour.toString().padStart(2, '0')}:${reminderSchedule.minute.toString().padStart(2, '0')} Asia/Kolkata)`
     );
 
     // Schedule first execution
     setTimeout(() => {
-        sendScheduledReminder(client, reminder);
+        sendScheduledReminder(client);
 
         // Then repeat daily
         setInterval(() => {
-            sendScheduledReminder(client, reminder);
+            sendScheduledReminder(client);
         }, 24 * 60 * 60 * 1000); // Every 24 hours
     }, msUntilReminder);
 }
@@ -108,11 +141,9 @@ function scheduleReminder(client, reminder) {
 function handleScheduledReminders(client) {
     client.once('ready', () => {
         console.log('✓ Scheduled reminders system initialized');
-        
-        // Schedule all reminders
-        for (const reminder of REMINDERS) {
-            scheduleReminder(client, reminder);
-        }
+
+        // Schedule one random daily reminder
+        scheduleReminder(client, REMINDER_VARIANTS[0]);
     });
 }
 

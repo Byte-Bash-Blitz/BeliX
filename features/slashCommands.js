@@ -1,57 +1,35 @@
 const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { buildLeaderboardEmbed, getLeaderboardButtons, buildMyPointsEmbed } = require('./leaderboard');
 const { loadTerminologies, postDailyTerminology } = require('./dailyTerminology');
-const { getLeaderboard, getMember, getMemberByUsername, getMemberByDiscordID, getPoints, initializePoints, syncMember } = require('../database/db');
+const { getLeaderboard, getMember, getMemberByUsername, getMemberByDiscordID, getMemberByDiscordUsername, getPoints, initializePoints, syncMember } = require('../database/db');
 const fs = require('fs');
 const path = require('path');
 
-// Helper functions for rookie data
-const ROOKIES_DATA_PATH = path.join(__dirname, '../json/rookiesData.json');
-const ROOKIE_ROLE_NAME = (process.env.ROOKIE_ROLE_NAME || 'rookies').trim().toLowerCase();
+const BASHER_ROLE_NAME = (process.env.BASHER_ROLE_NAME || 'basher').trim().toLowerCase();
 
 function normalizeRoleName(name) {
     return String(name || '').trim().toLowerCase();
 }
 
-function loadRookiesData() {
-    if (!fs.existsSync(ROOKIES_DATA_PATH)) {
-        return { rookiesmembersData: [], lastUpdated: null };
+async function isBasherMember(guild, userId, username) {
+    const databaseMember = await getMemberByDiscordID(userId) || await getMemberByDiscordUsername(username) || await getMemberByUsername(username);
+    if (databaseMember && normalizeRoleName(databaseMember.role) === BASHER_ROLE_NAME) {
+        return true;
     }
-    try {
-        const fileContent = fs.readFileSync(ROOKIES_DATA_PATH, 'utf-8');
-        if (!fileContent.trim()) {
-            return { rookiesmembersData: [], lastUpdated: null };
-        }
-        return JSON.parse(fileContent);
-    } catch (error) {
-        console.error('Error reading rookies data:', error.message);
-        return { rookiesmembersData: [], lastUpdated: null };
-    }
-}
 
-async function isRookieMember(guild, userId, username) {
     if (guild) {
         try {
             const member = await guild.members.fetch(userId);
             if (member) {
-                const hasRole = member.roles.cache.some((role) => normalizeRoleName(role.name) === ROOKIE_ROLE_NAME);
+                const hasRole = member.roles.cache.some((role) => normalizeRoleName(role.name) === BASHER_ROLE_NAME);
                 if (hasRole) return true;
             }
         } catch (error) {
-            console.error('Error checking rookie role:', error.message);
+            console.error('Error checking basher role:', error.message);
         }
     }
-    const data = loadRookiesData();
-    return data.rookiesmembersData.some(m => m.userId === userId || m.username === username);
-}
 
-function getRookiePoints(userId, username) {
-    const data = loadRookiesData();
-    const rookie = data.rookiesmembersData.find(m => m.userId === userId || m.username === username);
-    return {
-        points: rookie?.points || 0,
-        lastUpdate: rookie?.lastAwardedAt || null
-    };
+    return false;
 }
 
 // Cache for guild members to avoid rate limiting
@@ -76,11 +54,11 @@ function buildHelpEmbed() {
         .setTimestamp();
 }
 
-function buildRookieHelpEmbed() {
+function buildBasherHelpEmbed() {
     return new EmbedBuilder()
         .setColor('#FFD700')
-        .setTitle('🎯 Rookie Commands')
-        .setDescription('As a rookie member, here\'s your available command:')
+        .setTitle('🎯 Basher Commands')
+        .setDescription('As a basher member, here\'s your available command:')
         .addFields(
             { name: '/dailyquestions', value: 'View today\'s daily programming question with full details and explanation.' }
         )
@@ -471,21 +449,21 @@ function handleSlashCommands(client) {
 
         const { commandName } = interaction;
         
-        // Check if user is a rookie
+        // Check if user is a basher
         const userId = interaction.user.id;
         const username = interaction.user.username;
-        const isRookie = await isRookieMember(interaction.guild, userId, username);
+        const isBasher = await isBasherMember(interaction.guild, userId, username);
         
-        // Rookies can only use /dailyquestions and /help commands
-        if (isRookie && commandName !== 'dailyquestions' && commandName !== 'help') {
+        // Bashers can only use /dailyquestions and /help commands
+        if (isBasher && commandName !== 'dailyquestions' && commandName !== 'help') {
             return interaction.editReply({
-                content: '⚠️ As a rookie member, you only have access to the `/dailyquestions` command. Focus on learning and solving problems! 🚀'
+                content: '⚠️ As a basher member, you only have access to the `/dailyquestions` command. Focus on learning and solving problems! 🚀'
             });
         }
 
         if (commandName === 'help') {
-            if (isRookie) {
-                return interaction.editReply({ embeds: [buildRookieHelpEmbed()] });
+            if (isBasher) {
+                return interaction.editReply({ embeds: [buildBasherHelpEmbed()] });
             }
             return interaction.editReply({ embeds: [buildHelpEmbed()] });
         }
@@ -505,15 +483,15 @@ function handleSlashCommands(client) {
             const username = interaction.user.username;
             const displayName = interaction.member?.displayName || username;
 
-            // Check if user is a rookie
-            const isRookie = await isRookieMember(interaction.guild, userId, username);
+                // Check if user is a basher
+            const isBasher = await isBasherMember(interaction.guild, userId, username);
 
-            if (isRookie) {
-                // Rookies don't see points
+            if (isBasher) {
+                // Bashers don't see points
                 const embed = new EmbedBuilder()
                     .setColor('#ffa500')
-                    .setTitle('🎯 Rookie Member')
-                    .setDescription(`Hey ${displayName}! As a rookie member, your progress is being tracked separately. Keep learning and solving problems! 🚀`)
+                    .setTitle('🎯 Basher Member')
+                    .setDescription(`Hey ${displayName}! As a basher member, your progress is being tracked separately. Keep learning and solving problems! 🚀`)
                     .setFooter({ text: 'Focus on learning and growth!' })
                     .setTimestamp();
                 return interaction.editReply({ embeds: [embed] });

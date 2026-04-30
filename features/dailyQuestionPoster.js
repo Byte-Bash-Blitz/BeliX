@@ -9,19 +9,18 @@ function getTodayInTimeZone() {
   return new Date(nowInTz.getFullYear(), nowInTz.getMonth(), nowInTz.getDate());
 }
 
-function resolveQuestionNumber({ questions, startQuestionNumber, startDate }) {
-  if (!startQuestionNumber || !startDate) {
+function resolveQuestionNumber({ questions, totalDays }) {
+  if (!questions || questions.length === 0 || !totalDays) {
     return null;
   }
 
-  const start = new Date(`${startDate}T00:00:00+05:30`);
   const today = getTodayInTimeZone();
-  const daysSinceStart = Math.max(0, Math.floor((today - start) / (1000 * 60 * 60 * 24)));
-  const maxDay = Math.max(...questions.map(q => q.Day));
-  const questionNumberRaw = startQuestionNumber + daysSinceStart;
-  const normalizedNumber = ((questionNumberRaw - 1) % maxDay) + 1;
-
-  return { questionNumberRaw, normalizedNumber, maxDay };
+  const dayOfMonth = today.getDate();
+  
+  // Cycle through days 1 to totalDays based on day of month
+  const normalizedNumber = ((dayOfMonth - 1) % totalDays) + 1;
+  
+  return { dayOfMonth, normalizedNumber, maxDay: totalDays };
 }
 
 function getQuestionForDay() {
@@ -32,8 +31,7 @@ function getQuestionForDay() {
     
     const resolution = resolveQuestionNumber({
       questions,
-      startQuestionNumber: data.startQuestionNumber,
-      startDate: data.startDate,
+      totalDays: data.totalDays,
     });
 
     let questionObj = null;
@@ -41,16 +39,13 @@ function getQuestionForDay() {
 
     if (resolution) {
       questionObj = questions.find(q => q.Day === resolution.normalizedNumber);
-      displayDay = resolution.questionNumberRaw;
-      if (resolution.questionNumberRaw > resolution.maxDay) {
-        console.log(`ℹ️ Question number ${resolution.questionNumberRaw} wrapped to ${resolution.normalizedNumber}.`);
-      }
+      displayDay = resolution.normalizedNumber;
+      const cycleNumber = Math.floor((resolution.dayOfMonth - 1) / resolution.maxDay) + 1;
+      
+      console.log(`ℹ️ Question for today (Day ${resolution.dayOfMonth}): Day ${displayDay} | Cycle: ${cycleNumber}`);
     } else {
-      // Fallback: current day of month (1-31)
-      const today = getTodayInTimeZone();
-      const dayOfMonth = today.getDate();
-      questionObj = questions.find(q => q.Day === dayOfMonth);
-      displayDay = dayOfMonth;
+      console.log(`⚠️ Could not resolve question`);
+      return null;
     }
     
     if (!questionObj) {
@@ -76,7 +71,7 @@ function createQuestionEmbed(question) {
       { name: '📤 Output', value: `\`\`\`${question.Output}\`\`\``, inline: false },
       { name: '💡 Explanation', value: question.Explain, inline: false }
     )
-    .setFooter({ text: 'Daily Coding Challenge' })
+    .setFooter({ text: 'Daily Coding Challenge | 151 Days Total' })
     .setTimestamp();
   
   if (question.Formula) {

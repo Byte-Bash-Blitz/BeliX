@@ -15,6 +15,23 @@ if (!supabaseUrl || !supabaseKey || supabaseUrl.includes('your-supabase')) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+function toDateOnly(value) {
+    if (!value) return null;
+
+    if (typeof value === 'string') {
+        return value.slice(0, 10);
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toISOString().split('T')[0];
+}
+
+function toInteger(value, fallback = 0) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+}
+
 async function insertMembers() {
     try {
         // Read user.json file
@@ -32,9 +49,11 @@ async function insertMembers() {
                 // Map user.json fields to members table columns
                 const memberData = {
                     member_id: user.member_id,
-                    username: user.discord_username || user.name,
+                    username: user.discord_username || user.username || user.name,
+                    display_name: user.display_name || user.name || user.discord_username || user.username,
+                    role: user.role || null,
+                    birthday: toDateOnly(user.birthday || user.date_of_birth),
                     discord_username: user.discord_username,
-                    display_name: user.name,
                     name: user.name,
                     personal_email: user.personal_email,
                     academic_email: user.academic_email,
@@ -45,33 +64,22 @@ async function insertMembers() {
                     leetcode_username: user.leetcode_username,
                     instagram_username: user.instagram_username,
                     duolingo_username: user.duolingo_username,
-                    personal_website: user.personal_website,
                     linkedin_url: user.linkedin_url,
-                    avatar_url: user.avatar_url,
                     portfolio_url: user.portfolio_url,
                     resume_url: user.resume_url,
                     title: user.title,
-                    belmonts_level: user.belmonts_level,
-                    belmonts_points: user.belmonts_points || 0,
+                    belmonts_points: toInteger(user.belmonts_points, 0),
                     basher_no: user.basher_no,
-                    joined_as_basher_date: user.joined_as_basher_date,
-                    joined_as_belmonts: user.joined_as_belmonts,
-                    primary_domain: user.primary_domain,
-                    secondary_domain: user.secondary_domain,
-                    courses: user.courses || 0,
-                    projects: user.projects || 0,
-                    hackathons: user.hackathons || 0,
-                    internships: user.internships || 0,
-                    dailyprogress: user.dailyprogress || 0,
-                    certifications: user.certifications || 0,
+                    joined_as_basher_date: toDateOnly(user.joined_as_basher_date),
+                    dailyprogress: toInteger(user.dailyprogress, 0),
                     gpa: user.gpa,
-                    weekly_bash_attendance: user.weekly_bash_attendance,
                     testimony: user.testimony,
                     hobbies: Array.isArray(user.hobbies) ? user.hobbies.join(', ') : user.hobbies,
                     roll_number: user.roll_number,
                     batch: user.batch,
-                    date_of_birth: user.date_of_birth,
-                    birthday: user.date_of_birth
+                    problem_solved: toInteger(user.problem_solved, null),
+                    members_discord_id: user.members_discord_id || user.discord_id || user.member_id,
+                    domain: user.domain || user.primary_domain || user.secondary_domain || null,
                 };
 
                 // Insert into members table

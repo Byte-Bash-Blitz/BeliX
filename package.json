@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "build": "node index.js",
-    "rookies": "node scripts/getRookies.js",
+    "backfill:member-discord-ids": "node scripts/backfillMemberDiscordIds.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

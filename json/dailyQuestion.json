@@ -1,6 +1,5 @@
 {
-  "startQuestionNumber": 10,
-  "startDate": "2026-02-09",
+  "totalDays": 151,
   "Questions": [
   {
     "Day": 1,
@@ -1278,8 +1277,5 @@
     "Day": 151,
     "Difficulty": "Easy"
   }
-],
-  "rookieQuestions": 1,
-  "currentIndex": 109,
-  "lastPostedDate": "2026-02-05T09:05:01.416Z"
+  ]
 }

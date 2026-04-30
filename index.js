@@ -9,7 +9,6 @@ const { handleMemberSync } = require('./features/memberSync');
 const { handleBirthdayAnnouncement } = require('./features/birthdayAnnouncement');
 const { handleScheduledReminders } = require('./features/scheduledReminders');
 const { setupDailyQuestion } = require('./features/dailyQuestionPoster');
-const { handleGatheringScheduler } = require('./features/dailyGatheringScheduler');
 const { handleVibeCodeReport } = require('./features/dailyVibeCodeReport');
 
 // Express setup
@@ -57,7 +56,6 @@ handleMemberSync(client);
 handleBirthdayAnnouncement(client);
 handleScheduledReminders(client);
 setupDailyQuestion(client);
-handleGatheringScheduler(client);
 handleVibeCodeReport(client);
 console.log('✓ All features loaded');
 

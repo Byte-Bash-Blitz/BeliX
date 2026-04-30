@@ -24,7 +24,6 @@ A comprehensive Discord bot designed to enhance community engagement with automa
 
 ### ⏰ Scheduling & Automation
 - **Scheduled Reminders** - Customizable reminders for important events
-- **Meeting Tracker** - Track and log community meetings with timestamps
 - **Daily Posts** - Automated posting of terminologies and questions at scheduled times
 - **Auto Synchronization** - Periodic member data synchronization
 
@@ -83,10 +82,7 @@ BeliX/
 │   └── schema.sql                   # Database schema
 │
 ├── json/
-│   ├── memberSyncState.json         # Member sync state tracking
-│   ├── reminders.json               # Reminder configurations
 │   ├── dailyQuestion.json           # Daily coding questions
-│   ├── points.json                  # User points tracking
 │   └── terminologies.json           # Daily tech terminologies
 │
 ├── features/
@@ -104,8 +100,6 @@ BeliX/
 │
 ├── json/
 │   ├── dailyQuestion.json           # 129 programming questions (Days 1-129)
-│   ├── memberSyncState.json         # Sync state data
-│   ├── points.json                  # Member points data
 │   └── terminologies.json           # Tech terminology database
 │
 ├── prompts/
@@ -194,18 +188,6 @@ Tech terminology database with:
 - Definition
 - Category
 - Current index pointer
-
-### points.json
-Member points tracking with:
-- User IDs
-- Point balances
-- Transaction history
-
-### memberSyncState.json
-Synchronization state tracking:
-- Last sync timestamp
-- Synced members count
-- Sync status
 
 ---
 
@@ -307,7 +289,7 @@ Add new questions to `json/dailyQuestion.json` following the format:
 Add new terms to `json/terminologies.json`
 
 ### Reminders
-Configure reminders in `reminders.json` with time and message
+Configure reminders through the bot's reminder system with time and message
 
 ---
 

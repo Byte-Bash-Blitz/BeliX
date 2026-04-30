@@ -1,28 +1,4 @@
-const fs = require('fs');
-const path = require('path');
-const { getMemberByDiscordUsername, trackDiscordActivity, updateMemberRole } = require('../database/db');
-
-const syncStatePath = path.join(__dirname, '..', 'json', 'memberSyncState.json');
-
-function loadSyncState() {
-    try {
-        const raw = fs.readFileSync(syncStatePath, 'utf8');
-        return JSON.parse(raw);
-    } catch (error) {
-        return { lastMonthlySync: null };
-    }
-}
-
-function saveSyncState(state) {
-    fs.writeFileSync(syncStatePath, JSON.stringify(state, null, 2));
-}
-
-function isSameMonth(isoA, isoB) {
-    if (!isoA || !isoB) return false;
-    const a = new Date(isoA);
-    const b = new Date(isoB);
-    return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth();
-}
+const { getMemberByDiscordUsername, trackDiscordActivity, updateMemberRole, syncMember } = require('../database/db');
 
 async function updateMemberRoleInDatabase(member, { silent = false } = {}) {
     try {
@@ -43,7 +19,7 @@ async function updateMemberRoleInDatabase(member, { silent = false } = {}) {
             }
         } else {
             if (!silent) {
-                console.log(`⚠ Member ${discordUsername} not in database. Skipping role update.`);
+                console.log(`⚠ Member ${discordUsername} not found in members table. Skipping role update.`);
             }
         }
     } catch (error) {
@@ -55,6 +31,8 @@ async function trackMemberJoin(member) {
     try {
         const discordUsername = member.user.username;
         const displayName = member.displayName || member.user.username;
+
+        await syncMember(member, member.guild);
         
         // Check if member exists in database by discord_username
         const existingMember = await getMemberByDiscordUsername(discordUsername);
@@ -83,6 +61,8 @@ async function trackMemberUpdate(member) {
     try {
         const discordUsername = member.user.username;
         const displayName = member.displayName || member.user.username;
+
+        await syncMember(member, member.guild);
         
         // Check if member exists in database by discord_username
         const existingMember = await getMemberByDiscordUsername(discordUsername);
@@ -108,39 +88,8 @@ async function trackMemberUpdate(member) {
 }
 
 function handleMemberSync(client) {
-    // Sync all members on startup
     client.once('ready', async () => {
-        const state = loadSyncState();
-        const nowIso = new Date().toISOString();
-        
-        if (isSameMonth(state.lastMonthlySync, nowIso)) {
-            console.log('Monthly member sync already completed. Skipping startup sync.');
-            return;
-        }
-        
-        console.log('Starting monthly member synchronization and role update...');
-        
-        for (const guild of client.guilds.cache.values()) {
-            try {
-                const members = await guild.members.fetch({ limit: 0 });
-                
-                for (const member of members.values()) {
-                    if (!member.user.bot) {
-                        // Update roles in members table
-                        await updateMemberRoleInDatabase(member, { silent: true });
-                        // Track activity in discord_activity table
-                        await trackMemberUpdate(member);
-                    }
-                }
-                
-                console.log(`✓ Synced ${members.size} members from ${guild.name}`);
-            } catch (error) {
-                console.error(`Error syncing members from ${guild.name}:`, error);
-            }
-        }
-
-        state.lastMonthlySync = nowIso;
-        saveSyncState(state);
+        console.log('✓ Member synchronization listeners initialized');
     });
 
     // Track member when they join

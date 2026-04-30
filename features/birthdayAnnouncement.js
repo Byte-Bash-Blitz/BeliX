@@ -42,9 +42,6 @@ function createBirthdayEmbed(members) {
             `Wishing you an amazing day filled with joy, success, and wonderful memories! 🎈\n` +
             `May this year bring you closer to all your dreams! 🌟`
         );
-        if (member.avatar_url) {
-            embed.setThumbnail(member.avatar_url);
-        }
     } else {
         const names = members.map(m => `🎂 **${m.display_name || m.username}**`).join('\n');
         embed.setDescription(

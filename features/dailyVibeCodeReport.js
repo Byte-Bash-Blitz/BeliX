@@ -149,56 +149,27 @@ async function buildDailyVibeCodeReport(client) {
  * Send daily vibe-coding report
  */
 async function sendDailyVibeCodeReport(client) {
-    try {
-        const reportEmbed = await buildDailyVibeCodeReport(client);
-        
-        if (!reportEmbed) {
-            console.log(`⚠ Could not generate vibe-code report`);
-            return;
-        }
-
-        const reportsChannel = client.channels.cache.get(REPORTS_CHANNEL_ID);
-        if (!reportsChannel || !reportsChannel.isTextBased()) {
-            console.warn(`⚠ Reports channel not found`);
-            return;
-        }
-
-        await reportsChannel.send({ embeds: [reportEmbed] });
-        console.log(`✓ Daily vibe-code report sent to chamber-of-reckoning`);
-    } catch (error) {
-        console.error(`Error sending vibe-code report:`, error.message);
-    }
+    // Automation disabled: sending of daily vibe-code reports is commented per request.
+    // To re-enable, uncomment the implementation above.
+    console.log('Daily vibe-code report sending is disabled (commented out).');
 }
 
 /**
  * Schedule daily vibe-code report at 23:50
  */
 function scheduleVibeCodeReport(client) {
-    function scheduleNext() {
-        const delay = getDelayUntilNextScheduledTime(REPORT_HOUR, REPORT_MINUTE);
-        const hoursUntil = Math.floor(delay / (1000 * 60 * 60));
-        const minutesUntil = Math.floor((delay % (1000 * 60 * 60)) / (1000 * 60));
-
-        console.log(
-            `📅 Next vibe-code report scheduled in ${hoursUntil}h ${minutesUntil}m (${REPORT_HOUR.toString().padStart(2, '0')}:${REPORT_MINUTE.toString().padStart(2, '0')} Asia/Kolkata)`
-        );
-
-        setTimeout(async () => {
-            await sendDailyVibeCodeReport(client);
-            scheduleNext();
-        }, delay);
-    }
-
-    scheduleNext();
+    // Scheduling disabled: daily vibe-code report automation commented per request.
+    // To re-enable, uncomment the scheduleNext implementation that uses getDelayUntilNextScheduledTime and setTimeout.
+    console.log('Vibe-code report scheduler is disabled (commented out).');
 }
 
 /**
  * Initialize vibe-code report feature
  */
 function handleVibeCodeReport(client) {
+    // Automation disabled: keep handler to avoid breaking imports but do not schedule.
     client.once('ready', () => {
-        console.log('✓ Daily vibe-code report scheduler initialized');
-        scheduleVibeCodeReport(client);
+        console.log('Daily vibe-code report feature is disabled (handler commented out).');
     });
 }
 

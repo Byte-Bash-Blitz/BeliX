@@ -2,8 +2,6 @@
 
 A comprehensive Discord bot designed to enhance community engagement with automated features, gamification, and educational content delivery.
 
----
-
 ## 🌟 Features
 
 ### 📚 Educational Content

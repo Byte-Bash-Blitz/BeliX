@@ -57,6 +57,7 @@ handleBirthdayAnnouncement(client);
 handleScheduledReminders(client);
 setupDailyQuestion(client);
 handleVibeCodeReport(client);
+handleleaderboard(client);
 console.log('✓ All features loaded');
 
 // Track messages

@@ -15,6 +15,7 @@ const { handleVibeCodeReport } = require('./features/dailyVibeCodeReport');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+
 // Bot status tracking
 const botStatus = {
     isOnline: false,

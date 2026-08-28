@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ path: ['.env', 'utils/.env'] });
 const express = require('express');
 const { Client, GatewayIntentBits, Partials } = require('discord.js');
 const { handleWelcomeMessage } = require('./features/welcome');
@@ -58,7 +58,6 @@ handleBirthdayAnnouncement(client);
 handleScheduledReminders(client);
 setupDailyQuestion(client);
 handleVibeCodeReport(client);
-handleleaderboard(client);
 console.log('✓ All features loaded');
 
 // Track messages

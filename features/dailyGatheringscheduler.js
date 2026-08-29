@@ -43,10 +43,12 @@ const gatheringSession = {
     attendees: new Map(), // userId -> {username, displayName, joinedAt, leftAt}
     messageId: null,
     endTimeout: null, // Store timeout ID so we can clear it if needed
+    reminderTimeout: null,
+    liveTimeout: null,
 };
 
 const TIME_PROMPT_HOUR = 19; // 6 PM
-const TIME_PROMPT_MINUTE = 0; // 00 minutes
+const TIME_PROMPT_MINUTE = 00; // 00 minutes
 
 /**
  * Ask for gathering time in tinkering channel
@@ -173,25 +175,68 @@ async function postGatheringAnnouncement(client, gatheringTime, confirmedBy = nu
  */
 async function sendGatheringReminder(client, gatheringTime) {
     try {
-        const channel = await getChannel(client, TINKERING_CHANNEL_ID);
-        if (!channel || !channel.isTextBased()) return;
+        const commonHall = await getChannel(client, COMMON_HALL_CHANNEL_ID);
+        if (commonHall && commonHall.isTextBased()) {
+            const embed = new EmbedBuilder()
+                .setColor('#FFD700')
+                .setTitle(`⏰ Reminder: Daily Gathering Starting in 5 Minutes!`)
+                .setDescription(`<@&${BELMONTS_ROLE_ID}> Daily Gathering will start in **5 minutes**! Get ready to join the voice room: <#${VOICE_ROOM_ID}>`)
+                .addFields(
+                    { name: '⏰ Time', value: `**${gatheringTime}**`, inline: true },
+                    { name: '🎙️ Voice Channel', value: `<#${VOICE_ROOM_ID}>`, inline: true }
+                )
+                .setFooter({ text: 'Get ready! ⏱️' })
+                .setTimestamp();
 
-        const embed = new EmbedBuilder()
-            .setColor('#FFD700')
-            .setTitle(`⏰ Reminder: Gathering Starting Soon!`)
-            .setDescription(`<@&${BELMONTS_ROLE_ID}> Daily Gathering will start in **5 minutes**!`)
-            .addFields(
-                { name: '⏰ Time', value: `**${gatheringTime}**`, inline: false },
-                { name: '🎙️ Channel', value: 'Join: Common Hall Voice Room', inline: false }
-            )
-            .setColor('#FFD700')
-            .setFooter({ text: 'Get ready! ⏱️' })
-            .setTimestamp();
+            await commonHall.send({
+                content: `<@&${BELMONTS_ROLE_ID}> ⏰ **Daily Gathering starts in 5 minutes in <#${VOICE_ROOM_ID}>!**`,
+                embeds: [embed]
+            });
+        }
 
-        await channel.send({ embeds: [embed] });
+        const tinkering = await getChannel(client, TINKERING_CHANNEL_ID);
+        if (tinkering && tinkering.isTextBased()) {
+            await tinkering.send({
+                content: `<@&${BELMONTS_ROLE_ID}> ⏰ **Daily Gathering starts in 5 minutes in <#${VOICE_ROOM_ID}>!**`
+            });
+        }
+
         console.log(`✓ Sent 5-minute reminder for gathering at ${gatheringTime}`);
     } catch (error) {
         console.error(`Error sending reminder:`, error.message);
+    }
+}
+
+/**
+ * Send announcement when gathering goes LIVE at the exact scheduled time
+ */
+async function sendGatheringLiveAnnouncement(client, gatheringTime) {
+    try {
+        const channel = await getChannel(client, COMMON_HALL_CHANNEL_ID);
+        if (!channel || !channel.isTextBased()) {
+            console.warn(`⚠ Common hall channel (${COMMON_HALL_CHANNEL_ID}) not found`);
+            return;
+        }
+
+        const embed = new EmbedBuilder()
+            .setColor('#EF4444')
+            .setTitle(`🔴 Daily Gathering is Live Now!`)
+            .setDescription(`<@&${BELMONTS_ROLE_ID}> Today's daily gathering has started!\n\n👉 **Join the voice channel now**: <#${VOICE_ROOM_ID}>`)
+            .addFields(
+                { name: '⏰ Started At', value: `**${gatheringTime}**`, inline: true },
+                { name: '🎙️ Voice Channel', value: `<#${VOICE_ROOM_ID}>`, inline: true },
+                { name: '📌 Note', value: 'Please join on time, participate actively, and share your daily updates! 💪✨', inline: false }
+            )
+            .setFooter({ text: 'Belmonts Daily Gathering • Happening Now 🎙️' })
+            .setTimestamp();
+
+        await channel.send({
+            content: `<@&${BELMONTS_ROLE_ID}> 🔴 **The Daily Gathering is LIVE NOW! Click to join:** <#${VOICE_ROOM_ID}>`,
+            embeds: [embed]
+        });
+        console.log(`✓ Posted LIVE gathering announcement to common-hall (${COMMON_HALL_CHANNEL_ID}) at ${gatheringTime}`);
+    } catch (error) {
+        console.error(`Error sending live announcement:`, error.message);
     }
 }
 
@@ -225,6 +270,26 @@ async function startMeetingTracking(client, gatheringDate, gatheringTime) {
         gatheringSession.isActive = true;
         gatheringSession.startTime = startTime;
         gatheringSession.attendees.clear();
+
+        // Check if any members are already in the voice channel
+        try {
+            const voiceChannel = await getChannel(client, VOICE_ROOM_ID);
+            if (voiceChannel && voiceChannel.isVoiceBased()) {
+                voiceChannel.members.forEach(m => {
+                    if (!m.user.bot) {
+                        gatheringSession.attendees.set(m.id, {
+                            username: m.user.username,
+                            displayName: m.displayName || m.user.username,
+                            joinedAt: new Date(),
+                            leftAt: null,
+                        });
+                        console.log(`✓ ${m.displayName} already in voice channel at gathering start`);
+                    }
+                });
+            }
+        } catch (vcErr) {
+            // Ignore if unable to check
+        }
 
         console.log(`✓ Meeting tracking started (ID: ${gatheringSession.meetingId}) at ${startTime.toLocaleTimeString()}`);
     } catch (error) {
@@ -467,22 +532,51 @@ async function handleGatheringTimeSelection(client, interaction) {
 
         if (!interaction.isButton()) return;
 
+        // Acknowledge interaction immediately to prevent "BliX didn't respond in time"
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
         let gatheringTime = null;
         let isCancellation = false;
 
-        if (customId === 'gathering_time_2000' || customId === 'gathering_time_1900') {
-            gatheringTime = '20:00 (8:00 PM)';
-        } else if (customId === 'gathering_time_2030' || customId === 'gathering_time_1930') {
-            gatheringTime = '20:30 (8:30 PM)';
-        } else if (customId === 'gathering_time_2100') {
-            gatheringTime = '21:00 (9:00 PM)';
-        } else if (customId === 'gathering_cancel') {
+        if (customId === 'gathering_cancel') {
             isCancellation = true;
+        } else if (customId.startsWith('gathering_time_')) {
+            const timeCode = customId.replace('gathering_time_', '');
+            if (timeCode.length === 4 && /^\d+$/.test(timeCode)) {
+                const hh = parseInt(timeCode.slice(0, 2), 10);
+                const mm = parseInt(timeCode.slice(2, 4), 10);
+                const hour12 = hh % 12 || 12;
+                const ampm = hh >= 12 ? 'PM' : 'AM';
+                const minuteStr = mm.toString().padStart(2, '0');
+                gatheringTime = `${hh.toString().padStart(2, '0')}:${minuteStr} (${hour12}:${minuteStr} ${ampm})`;
+            }
+        }
+
+        if (!isCancellation && !gatheringTime) {
+            await interaction.editReply({ content: `⚠️ Unknown gathering action: \`${customId}\`` });
+            return;
         }
 
         const today = getCurrentTimeInTimeZone().toISOString().split('T')[0];
 
         if (isCancellation) {
+            // Cancel any pending scheduled timeouts
+            if (gatheringSession.reminderTimeout) {
+                clearTimeout(gatheringSession.reminderTimeout);
+                gatheringSession.reminderTimeout = null;
+            }
+            if (gatheringSession.liveTimeout) {
+                clearTimeout(gatheringSession.liveTimeout);
+                gatheringSession.liveTimeout = null;
+            }
+            if (gatheringSession.endTimeout) {
+                clearTimeout(gatheringSession.endTimeout);
+                gatheringSession.endTimeout = null;
+            }
+            gatheringSession.isActive = false;
+            gatheringSession.meetingId = null;
+            gatheringSession.attendees.clear();
+
             // Cancel gathering in database
             await cancelGathering(today, userId, displayName);
 
@@ -531,7 +625,7 @@ async function handleGatheringTimeSelection(client, interaction) {
                 .setDescription(cancelDesc)
                 .setTimestamp();
 
-            await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+            await interaction.editReply({ embeds: [embed] });
 
             // Disable buttons on the original tinkering prompt message to avoid duplicate clicks
             try {
@@ -546,6 +640,20 @@ async function handleGatheringTimeSelection(client, interaction) {
 
             console.log(`✓ Gathering cancelled by ${displayName}`);
         } else if (gatheringTime) {
+            // Clear any previously scheduled timeouts if rescheduling
+            if (gatheringSession.reminderTimeout) {
+                clearTimeout(gatheringSession.reminderTimeout);
+                gatheringSession.reminderTimeout = null;
+            }
+            if (gatheringSession.liveTimeout) {
+                clearTimeout(gatheringSession.liveTimeout);
+                gatheringSession.liveTimeout = null;
+            }
+            if (gatheringSession.endTimeout) {
+                clearTimeout(gatheringSession.endTimeout);
+                gatheringSession.endTimeout = null;
+            }
+
             // Confirm gathering with time in database
             const timeStr = gatheringTime.split(' ')[0] + ':00';
             await confirmGathering(userId, displayName, today, timeStr);
@@ -567,7 +675,7 @@ async function handleGatheringTimeSelection(client, interaction) {
                 .setFooter({ text: `Set by: ${displayName}` })
                 .setTimestamp();
 
-            await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+            await interaction.editReply({ embeds: [embed] });
 
             // Disable buttons on the original tinkering prompt message to avoid duplicate clicks
             try {
@@ -580,55 +688,58 @@ async function handleGatheringTimeSelection(client, interaction) {
                 // Ignore if unable to edit prompt message
             }
 
-            // Schedule reminder (5 minutes before)
+            // Calculate delay to exact meeting time using timezone utility
             const [time] = gatheringTime.split(' ');
             const [hours, minutes] = time.split(':');
-            const targetHour = parseInt(hours);
-            const targetMinute = parseInt(minutes);
+            const targetHour = parseInt(hours, 10);
+            const targetMinute = parseInt(minutes, 10);
 
-            // Calculate delay to gathering time using timezone-aware functions
-            const now = getCurrentTimeInTimeZone();
-            const gatheringTimeToday = new Date(now);
-            gatheringTimeToday.setHours(targetHour, targetMinute, 0, 0);
+            const delayToLiveMs = getDelayUntilNextScheduledTime(targetHour, targetMinute);
+            const delayToReminderMs = Math.max(0, delayToLiveMs - 5 * 60 * 1000);
 
-            // If gathering time has passed, it's for tomorrow
-            let gatheringDateTime = gatheringTimeToday;
-            if (gatheringTimeToday <= now) {
-                gatheringDateTime = new Date(gatheringTimeToday);
-                gatheringDateTime.setDate(gatheringDateTime.getDate() + 1);
+            console.log(`⏰ Gathering scheduled for ${gatheringTime}: Live in ${Math.round(delayToLiveMs / 1000 / 60)}m, Reminder in ${Math.round(delayToReminderMs / 1000 / 60)}m`);
+
+            // Schedule 5-minute reminder if more than 5 minutes away
+            if (delayToReminderMs > 0) {
+                gatheringSession.reminderTimeout = setTimeout(() => {
+                    sendGatheringReminder(client, gatheringTime);
+                }, delayToReminderMs);
+                console.log(`✓ 5-minute reminder scheduled for ${Math.round(delayToReminderMs / 1000 / 60)} minutes from now`);
             }
 
-            // Calculate reminder time (5 minutes before)
-            const reminderDateTime = new Date(gatheringDateTime.getTime() - 5 * 60 * 1000);
-
-            // Calculate delay accounting for timezone offset
-            const systemNow = new Date();
-            const tzOffset = systemNow.getTime() - now.getTime();
-            const adjustedReminderTime = reminderDateTime.getTime() + tzOffset;
-            const delayMs = Math.max(0, adjustedReminderTime - systemNow.getTime());
-
-            console.log(`⏰ Reminder scheduled: gathering=${gatheringDateTime.toLocaleTimeString()}, reminder=${reminderDateTime.toLocaleTimeString()}, delay=${delayMs}ms`);
-
-            if (delayMs > 0) {
-                setTimeout(() => sendGatheringReminder(client, gatheringTime), delayMs);
-                console.log(`✓ 5-minute reminder will be sent in ${Math.round(delayMs / 1000 / 60)} minutes`);
-            } else {
-                console.warn(`⚠ Reminder time is in the past. Not scheduling.`);
-            }
-
-            // Start meeting tracking
+            // Schedule LIVE announcement and session start at the exact chosen time (e.g. 8:30 PM)
             const dateStr = getCurrentTimeInTimeZone().toISOString().split('T')[0];
-            await startMeetingTracking(client, dateStr, time);
+            const startLiveSession = async () => {
+                await sendGatheringLiveAnnouncement(client, gatheringTime);
+                await startMeetingTracking(client, dateStr, time);
 
-            // Schedule end after 2 hours (or earlier if everyone leaves)
-            gatheringSession.endTimeout = setTimeout(() => {
-                endGatheringAndReport(client);
-            }, 2 * 60 * 60 * 1000);
+                // Schedule meeting conclusion after 2 hours (or earlier if everyone leaves once active)
+                gatheringSession.endTimeout = setTimeout(() => {
+                    endGatheringAndReport(client);
+                }, 2 * 60 * 60 * 1000);
+            };
+
+            if (delayToLiveMs > 0) {
+                gatheringSession.liveTimeout = setTimeout(startLiveSession, delayToLiveMs);
+                console.log(`✓ LIVE meeting announcement scheduled for ${gatheringTime} (in ${Math.round(delayToLiveMs / 1000 / 60)} minutes)`);
+            } else {
+                // Scheduled for right now
+                await startLiveSession();
+            }
 
             console.log(`✓ Gathering confirmed for ${gatheringTime}`);
         }
     } catch (error) {
         console.error(`Error handling gathering time selection:`, error.message);
+        try {
+            if (interaction.deferred) {
+                await interaction.editReply({ content: `⚠️ Error processing gathering selection: ${error.message}` });
+            } else if (!interaction.replied) {
+                await interaction.reply({ content: `⚠️ Error processing gathering selection: ${error.message}`, flags: MessageFlags.Ephemeral });
+            }
+        } catch (e) {
+            // Ignore secondary failure
+        }
     }
 }
 

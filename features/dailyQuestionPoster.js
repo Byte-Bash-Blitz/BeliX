@@ -140,7 +140,7 @@ async function postDailyQuestion(client) {
 }
 
 function scheduleQuestionPost(client) {
-  const timeUntilRun = getDelayUntilNextScheduledTime(15, 0); // 8:00 AM
+  const timeUntilRun = getDelayUntilNextScheduledTime(20, 31); // 8:00 AM
   
   // Clear existing scheduler
   if (questionScheduler) {

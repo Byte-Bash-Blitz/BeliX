@@ -6,8 +6,8 @@ const VIBE_CODING_CHANNEL_ID = process.env['vibe-coding'] || '136205213357022012
 const REPORTS_CHANNEL_ID = '1475575831601610862';
 const BELMONTS_ROLE_ID = '1307057022453153813';
 
-const REPORT_HOUR = 23; // 11 PM
-const REPORT_MINUTE = 50; // 50 minutes
+const REPORT_HOUR = 11; // 11 PM
+const REPORT_MINUTE = 45; // 50 minutes
 
 /**
  * Get today's date as string (YYYY-MM-DD)
@@ -149,27 +149,56 @@ async function buildDailyVibeCodeReport(client) {
  * Send daily vibe-coding report
  */
 async function sendDailyVibeCodeReport(client) {
-    // Automation disabled: sending of daily vibe-code reports is commented per request.
-    // To re-enable, uncomment the implementation above.
-    console.log('Daily vibe-code report sending is disabled (commented out).');
+    try {
+        const reportEmbed = await buildDailyVibeCodeReport(client);
+        
+        if (!reportEmbed) {
+            console.log(`⚠ Could not generate vibe-code report`);
+            return;
+        }
+
+        const reportsChannel = client.channels.cache.get(REPORTS_CHANNEL_ID);
+        if (!reportsChannel || !reportsChannel.isTextBased()) {
+            console.warn(`⚠ Reports channel not found`);
+            return;
+        }
+
+        await reportsChannel.send({ embeds: [reportEmbed] });
+        console.log(`✓ Daily vibe-code report sent to chamber-of-reckoning`);
+    } catch (error) {
+        console.error(`Error sending vibe-code report:`, error.message);
+    }
 }
 
 /**
  * Schedule daily vibe-code report at 23:50
  */
 function scheduleVibeCodeReport(client) {
-    // Scheduling disabled: daily vibe-code report automation commented per request.
-    // To re-enable, uncomment the scheduleNext implementation that uses getDelayUntilNextScheduledTime and setTimeout.
-    console.log('Vibe-code report scheduler is disabled (commented out).');
+    function scheduleNext() {
+        const delay = getDelayUntilNextScheduledTime(REPORT_HOUR, REPORT_MINUTE);
+        const hoursUntil = Math.floor(delay / (1000 * 60 * 60));
+        const minutesUntil = Math.floor((delay % (1000 * 60 * 60)) / (1000 * 60));
+
+        console.log(
+            `📅 Next vibe-code report scheduled in ${hoursUntil}h ${minutesUntil}m (${REPORT_HOUR.toString().padStart(2, '0')}:${REPORT_MINUTE.toString().padStart(2, '0')} Asia/Kolkata)`
+        );
+
+        setTimeout(async () => {
+            await sendDailyVibeCodeReport(client);
+            scheduleNext();
+        }, delay);
+    }
+
+    scheduleNext();
 }
 
 /**
  * Initialize vibe-code report feature
  */
 function handleVibeCodeReport(client) {
-    // Automation disabled: keep handler to avoid breaking imports but do not schedule.
     client.once('ready', () => {
-        console.log('Daily vibe-code report feature is disabled (handler commented out).');
+        console.log('✓ Daily vibe-code report scheduler initialized');
+        scheduleVibeCodeReport(client);
     });
 }
 

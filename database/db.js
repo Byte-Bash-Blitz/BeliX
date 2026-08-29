@@ -802,6 +802,369 @@ async function addBelmontsPointsByDiscordUsername(discordUsername, pointsToAdd) 
     }
 }
 
+// ============ Meetings Operations ============
+
+async function createMeeting(meetingData) {
+    if (!dbAvailable) return null;
+    try {
+        const {
+            title,
+            meeting_date,
+            meeting_time,
+            start_time,
+        } = meetingData;
+
+        const { data, error } = await supabase
+            .from('meetings')
+            .insert({
+                title,
+                meeting_date,
+                meeting_time,
+                start_time,
+                attended_members: 0,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            })
+            .select();
+
+        if (error) {
+            console.error('Error creating meeting:', error);
+            return null;
+        }
+
+        return data?.[0] || null;
+    } catch (error) {
+        console.error('Error creating meeting:', error);
+        return null;
+    }
+}
+
+async function updateMeetingEnd(meetingId, endData) {
+    if (!dbAvailable) return null;
+    try {
+        const {
+            end_time,
+            duration_minutes,
+            attended_members,
+        } = endData;
+
+        const { data, error } = await supabase
+            .from('meetings')
+            .update({
+                end_time,
+                duration_minutes,
+                attended_members,
+                updated_at: new Date().toISOString(),
+            })
+            .eq('meeting_id', meetingId)
+            .select();
+
+        if (error) {
+            console.error('Error updating meeting:', error);
+            return null;
+        }
+
+        return data?.[0] || null;
+    } catch (error) {
+        console.error('Error ending meeting:', error);
+        return null;
+    }
+}
+
+async function recordAttendance(meetingId, attendanceData) {
+    if (!dbAvailable) return null;
+    try {
+        // Ensure meetingId is included in the attendance data
+        const dataToInsert = Array.isArray(attendanceData) 
+            ? attendanceData.map(d => ({ ...d, meeting_id: meetingId }))
+            : [{ ...attendanceData, meeting_id: meetingId }];
+
+        const { data, error } = await supabase
+            .from('meeting_attendance')
+            .insert(dataToInsert)
+            .select();
+
+        if (error) {
+            console.error('Error recording attendance:', error);
+            return null;
+        }
+
+        return data || null;
+    } catch (error) {
+        console.error('Error recording attendance:', error);
+        return null;
+    }
+}
+
+async function getMeetingAttendance(meetingId) {
+    if (!dbAvailable) return [];
+    try {
+        const { data, error } = await supabase
+            .from('meeting_attendance')
+            .select('*')
+            .eq('meeting_id', meetingId)
+            .order('total_duration_minutes', { ascending: false });
+
+        if (error) {
+            console.error('Error fetching attendance:', error);
+            return [];
+        }
+
+        return data || [];
+    } catch (error) {
+        console.error('Error getting meeting attendance:', error);
+        return [];
+    }
+}
+
+async function getMeetings(limit = 30) {
+    if (!dbAvailable) return [];
+    try {
+        const { data, error } = await supabase
+            .from('meetings')
+            .select('*')
+            .order('meeting_date', { ascending: false })
+            .limit(limit);
+
+        if (error) {
+            console.error('Error fetching meetings:', error);
+            return [];
+        }
+
+        return data || [];
+    } catch (error) {
+        console.error('Error getting meetings:', error);
+        return [];
+    }
+}
+
+// ============ Gathering Confirmation functions ============
+
+async function confirmGathering(memberId, username, gatheringDate, gatheringTime = '20:00:00') {
+    if (!dbAvailable) return null;
+    try {
+        const dateStr = gatheringDate ? new Date(gatheringDate).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+        const timeStr = typeof gatheringTime === 'number' ? `${gatheringTime}:00:00` : gatheringTime;
+        
+        // Check if user exists in members table by Discord ID
+        const member = await getMember(memberId);
+        // Only set confirmed_by_id if user is synced (store their actual member_id from DB, not Discord ID)
+        const confirmedById = member ? member.member_id : null;
+        
+        // Check if gathering confirmation already exists for today
+        const { data: existing } = await supabase
+            .from('gathering_confirmations')
+            .select('*')
+            .eq('gathering_date', dateStr)
+            .single();
+
+        if (existing) {
+            // Update existing confirmation
+            const { data, error } = await supabase
+                .from('gathering_confirmations')
+                .update({
+                    gathering_time: timeStr,
+                    is_confirmed: true,
+                    confirmed_by_id: confirmedById,
+                    confirmed_by_username: username,
+                    confirmed_at: new Date().toISOString(),
+                    cancelled_by_id: null,
+                    cancelled_by_username: null,
+                    cancelled_at: null,
+                    updated_at: new Date().toISOString(),
+                })
+                .eq('gathering_date', dateStr)
+                .select();
+
+            if (error) {
+                console.error('Error confirming gathering:', error);
+                return null;
+            }
+            return data?.[0] || null;
+        } else {
+            // Create new confirmation
+            const { data, error } = await supabase
+                .from('gathering_confirmations')
+                .insert({
+                    gathering_date: dateStr,
+                    gathering_time: timeStr,
+                    is_confirmed: true,
+                    confirmed_by_id: confirmedById,
+                    confirmed_by_username: username,
+                    confirmed_at: new Date().toISOString(),
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                })
+                .select();
+
+            if (error) {
+                console.error('Error creating gathering confirmation:', error);
+                return null;
+            }
+            return data?.[0] || null;
+        }
+    } catch (error) {
+        console.error('Error confirming gathering:', error);
+        return null;
+    }
+}
+
+async function cancelGathering(gatheringDate, cancelledById = null, cancelledByUsername = null) {
+    if (!dbAvailable) return null;
+    try {
+        const dateStr = gatheringDate ? new Date(gatheringDate).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+        
+        // Check if user is synced and store their actual member_id (not Discord ID)
+        let finalCancelledById = null;
+        if (cancelledById) {
+            const member = await getMember(cancelledById);
+            finalCancelledById = member ? member.member_id : null;
+        }
+        
+        const { data, error } = await supabase
+            .from('gathering_confirmations')
+            .update({
+                is_confirmed: false,
+                confirmed_by_id: null,
+                confirmed_by_username: null,
+                confirmed_at: null,
+                cancelled_by_id: finalCancelledById,
+                cancelled_by_username: cancelledByUsername,
+                cancelled_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            })
+            .eq('gathering_date', dateStr)
+            .select();
+
+        if (error) {
+            console.error('Error cancelling gathering:', error);
+            return null;
+        }
+        return data?.[0] || null;
+    } catch (error) {
+        console.error('Error cancelling gathering:', error);
+        return null;
+    }
+}
+
+async function updateGatheringTime(gatheringDate, newGatheringTime) {
+    if (!dbAvailable) return null;
+    try {
+        const dateStr = gatheringDate ? new Date(gatheringDate).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+        const timeStr = typeof newGatheringTime === 'number' ? `${newGatheringTime}:00:00` : newGatheringTime;
+        
+        // Check if gathering confirmation exists for today
+        const { data: existing } = await supabase
+            .from('gathering_confirmations')
+            .select('*')
+            .eq('gathering_date', dateStr)
+            .single();
+
+        if (existing) {
+            // Update existing confirmation with new time
+            const { data, error } = await supabase
+                .from('gathering_confirmations')
+                .update({
+                    gathering_time: timeStr,
+                    updated_at: new Date().toISOString(),
+                })
+                .eq('gathering_date', dateStr)
+                .select();
+
+            if (error) {
+                console.error('Error updating gathering time:', error);
+                return null;
+            }
+            return data?.[0] || null;
+        } else {
+            // Create new gathering confirmation with time
+            const { data, error } = await supabase
+                .from('gathering_confirmations')
+                .insert({
+                    gathering_date: dateStr,
+                    gathering_time: timeStr,
+                    is_confirmed: false,
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                })
+                .select();
+
+            if (error) {
+                console.error('Error creating gathering with time:', error);
+                return null;
+            }
+            return data?.[0] || null;
+        }
+    } catch (error) {
+        console.error('Error updating gathering time:', error);
+        return null;
+    }
+}
+
+async function getGatheringStatus(gatheringDate) {
+    if (!dbAvailable) return null;
+    try {
+        const dateStr = gatheringDate ? new Date(gatheringDate).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+        
+        const { data, error } = await supabase
+            .from('gathering_confirmations')
+            .select('*')
+            .eq('gathering_date', dateStr)
+            .single();
+
+        if (error && error.code !== 'PGRST116') {
+            console.error('Error fetching gathering status:', error);
+        }
+        return data || null;
+    } catch (error) {
+        console.error('Error getting gathering status:', error);
+        return null;
+    }
+}
+
+async function getGatheringHistory(days = 30) {
+    if (!dbAvailable) return [];
+    try {
+        const fromDate = new Date();
+        fromDate.setDate(fromDate.getDate() - days);
+        const dateStr = fromDate.toISOString().split('T')[0];
+
+        const { data, error } = await supabase
+            .from('gathering_confirmations')
+            .select('*')
+            .gte('gathering_date', dateStr)
+            .order('gathering_date', { ascending: false });
+
+        if (error) {
+            console.error('Error fetching gathering history:', error);
+            return [];
+        }
+        return data || [];
+    } catch (error) {
+        console.error('Error getting gathering history:', error);
+        return [];
+    }
+}
+
+async function getMeetingStats() {
+    if (!dbAvailable) return null;
+    try {
+        const { data, error } = await supabase
+            .from('meetings')
+            .select('count()');
+
+        if (error) {
+            console.error('Error fetching meeting stats:', error);
+            return null;
+        }
+
+        return data;
+    } catch (error) {
+        console.error('Error getting meeting stats:', error);
+        return null;
+    }
+}
+
 module.exports = {
     syncMember,
     getMember,
@@ -827,4 +1190,17 @@ module.exports = {
     getDiscordActivitySummary,
     getMemberByDiscordUsername,
     addBelmontsPointsByDiscordUsername,
+    // Meetings functions
+    createMeeting,
+    updateMeetingEnd,
+    recordAttendance,
+    getMeetingAttendance,
+    getMeetings,
+    getMeetingStats,
+    // Gathering Confirmation functions
+    confirmGathering,
+    cancelGathering,
+    updateGatheringTime,
+    getGatheringStatus,
+    getGatheringHistory,
 };

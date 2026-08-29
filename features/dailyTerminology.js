@@ -97,7 +97,7 @@ async function postDailyTerminology(client) {
 function scheduleDailyTerminology(client) {
     // Schedule the first posting
     function scheduleNext() {
-        const delay = getDelayUntilNextScheduledTime(11, 17); // 8:00 AM
+        const delay = getDelayUntilNextScheduledTime(20, 31); // 8:00 AM
         console.log(`📅 Next terminology post scheduled in ${Math.round(delay / 1000 / 60)} minutes (9:00 AM Asia/Kolkata)`);
         
         setTimeout(async () => {

@@ -10,7 +10,7 @@ const { handleBirthdayAnnouncement } = require('./features/birthdayAnnouncement'
 const { handleScheduledReminders } = require('./features/scheduledReminders');
 const { setupDailyQuestion } = require('./features/dailyQuestionPoster');
 const { handleVibeCodeReport } = require('./features/dailyVibeCodeReport');
-
+const { handleGatheringScheduler } = require('./features/dailyGatheringscheduler');
 // Express setup
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -65,6 +65,7 @@ handleBirthdayAnnouncement(client);
 handleScheduledReminders(client);
 setupDailyQuestion(client);
 handleVibeCodeReport(client);
+handleGatheringScheduler(client);
 console.log('✓ All features loaded');
 
 // Track messages
@@ -109,10 +110,18 @@ app.get('/status', (req, res) => {
 });
 
 // Start Express server
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`Express server running on port ${PORT}`);
     console.log(`Health check: http://localhost:${PORT}/health`);
     console.log(`Status check: http://localhost:${PORT}/status`);
+});
+
+server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        console.warn(`⚠ Port ${PORT} is already in use. Skipping Express server.`);
+    } else {
+        console.error('Express server error:', err);
+    }
 });
 
 client.login(discordToken);

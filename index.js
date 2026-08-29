@@ -37,6 +37,13 @@ const client = new Client({
     partials: [Partials.Channel, Partials.Message, Partials.Reaction],
 });
 
+const discordToken = process.env.DISCORD_TOKEN || process.env.TOKEN;
+
+if (!discordToken) {
+    console.error('Missing Discord bot token. Create a .env file in the project root with DISCORD_TOKEN=your_token or TOKEN=your_token, then restart the bot.');
+    process.exit(1);
+}
+
 // Initialize reminders from disk
 const reminders = [];
 
@@ -108,4 +115,4 @@ app.listen(PORT, () => {
     console.log(`Status check: http://localhost:${PORT}/status`);
 });
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(discordToken);

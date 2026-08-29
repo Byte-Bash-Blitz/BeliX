@@ -45,27 +45,78 @@ function findTerminologyChannel(client) {
  * Post daily terminology
  */
 async function postDailyTerminology(client) {
-    // Automation disabled: posting of daily terminology is commented per request.
-    // To re-enable, uncomment the implementation above.
-    console.log('Daily terminology posting is disabled (commented out).');
+    
+   const data = loadTerminologies();
+    
+    if (!data.terminologies || data.terminologies.length === 0) {
+        console.log('No terminologies available to post.');
+        return;
+    }
+    
+    // Get current terminology
+    const terminology = data.terminologies[data.currentIndex];
+    
+    // Create embed
+    const embed = new EmbedBuilder()
+        .setColor('#4a90e2')
+        .setTitle(`📚 Daily Tech Term: ${terminology.term}`)
+        .setDescription(terminology.definition)
+        .addFields(
+            { name: '📂 Category', value: terminology.category, inline: true },
+            { name: '📅 Term #', value: `${data.currentIndex + 1}/${data.terminologies.length}`, inline: true },
+            { name: '📖 Description', value: `**${terminology.description || 'No description available'}**` }
+        )
+        .setFooter({ text: 'Learn something new every day! 🚀' })
+        .setTimestamp();
+    
+    // Post to specific channel
+    const channel = findTerminologyChannel(client);
+    
+    if (channel) {
+        try {
+            await channel.send({ embeds: [embed] });
+            console.log(`✓ Posted daily terminology to ${channel.name}`);
+        } catch (error) {
+            console.error(`Failed to post terminology:`, error.message);
+        }
+    } else {
+        console.log(`⚠ Terminology channel not found`);
+    }
+    
+    // Update index for next day (continue incrementing)
+    data.currentIndex = data.currentIndex + 1;
+    data.lastPostedDate = new Date().toISOString();
+    saveTerminologies(data);
+    
+    console.log(`Next terminology index: ${data.currentIndex}`);
 }
 
 /**
  * Schedule daily terminology posting at 8:00 AM
  */
 function scheduleDailyTerminology(client) {
-    // Scheduling disabled: daily terminology automation commented per request.
-    // To re-enable, uncomment the scheduleNext implementation that uses getDelayUntilNextScheduledTime and setTimeout.
-    console.log('Daily terminology scheduler is disabled (commented out).');
+    // Schedule the first posting
+    function scheduleNext() {
+        const delay = getDelayUntilNextScheduledTime(11, 17); // 8:00 AM
+        console.log(`📅 Next terminology post scheduled in ${Math.round(delay / 1000 / 60)} minutes (9:00 AM Asia/Kolkata)`);
+        
+        setTimeout(async () => {
+            await postDailyTerminology(client);
+            // Schedule the next one (24 hours later)
+            scheduleNext();
+        }, delay);
+    }
+    
+    scheduleNext();
 }
 
 /**
  * Initialize daily terminology feature
  */
 function handleDailyTerminology(client) {
-    // Automation disabled: keep handler to avoid breaking imports but do not schedule.
     client.once('ready', () => {
-        console.log('Daily terminology feature is disabled (handler commented out).');
+        console.log('✓ Daily terminology scheduler initialized');
+        scheduleDailyTerminology(client);
     });
 }
 
@@ -75,3 +126,4 @@ module.exports = {
     loadTerminologies,
     saveTerminologies
 };
+

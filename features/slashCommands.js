@@ -58,9 +58,10 @@ function buildBasherHelpEmbed() {
     return new EmbedBuilder()
         .setColor('#FFD700')
         .setTitle('🎯 Basher Commands')
-        .setDescription('As a basher member, here\'s your available command:')
+        .setDescription('As a basher member, here are your available commands:')
         .addFields(
-            { name: '/dailyquestions', value: 'View today\'s daily programming question with full details and explanation.' }
+            { name: '/dailyquestions', value: 'View today\'s daily programming question with full details and explanation.' },
+            { name: '/leaderboard', value: 'Show the leaderboard (top 10 users).' }
         )
         .setFooter({ text: '🚀 Focus on learning and growth!' })
         .setTimestamp();
@@ -454,10 +455,10 @@ function handleSlashCommands(client) {
         const username = interaction.user.username;
         const isBasher = await isBasherMember(interaction.guild, userId, username);
         
-        // Bashers can only use /dailyquestions and /help commands
-        if (isBasher && commandName !== 'dailyquestions' && commandName !== 'help') {
+        // Bashers can use /dailyquestions, /leaderboard, and /help commands
+        if (isBasher && commandName !== 'dailyquestions' && commandName !== 'leaderboard' && commandName !== 'help') {
             return interaction.editReply({
-                content: '⚠️ As a basher member, you only have access to the `/dailyquestions` command. Focus on learning and solving problems! 🚀'
+                content: '⚠️ As a basher member, you only have access to the `/dailyquestions` and `/leaderboard` commands. Focus on learning and solving problems! 🚀'
             });
         }
 

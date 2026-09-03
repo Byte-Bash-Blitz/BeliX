@@ -48,7 +48,7 @@ const gatheringSession = {
 };
 
 const TIME_PROMPT_HOUR = 19; // 6 PM
-const TIME_PROMPT_MINUTE = 00; // 00 minutes
+const TIME_PROMPT_MINUTE = 0; // 00 minutes
 
 /**
  * Ask for gathering time in tinkering channel

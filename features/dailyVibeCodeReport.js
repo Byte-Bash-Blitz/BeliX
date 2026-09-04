@@ -6,8 +6,8 @@ const VIBE_CODING_CHANNEL_ID = process.env['vibe-coding'] || '136205213357022012
 const REPORTS_CHANNEL_ID = '1475575831601610862';
 const BELMONTS_ROLE_ID = '1307057022453153813';
 
-const REPORT_HOUR = 11; // 11 PM
-const REPORT_MINUTE = 45; // 50 minutes
+const REPORT_HOUR = 15; // 11 PM
+const REPORT_MINUTE = 0; // 50 minutes
 
 /**
  * Get today's date as string (YYYY-MM-DD)

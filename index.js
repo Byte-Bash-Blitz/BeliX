@@ -11,6 +11,7 @@ const { handleScheduledReminders } = require('./features/scheduledReminders');
 const { setupDailyQuestion } = require('./features/dailyQuestionPoster');
 const { handleVibeCodeReport } = require('./features/dailyVibeCodeReport');
 const { handleGatheringScheduler } = require('./features/dailyGatheringscheduler');
+const { handleMentionAssistant } = require('./features/mentionAssistant');
 // Express setup
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -66,6 +67,7 @@ handleScheduledReminders(client);
 setupDailyQuestion(client);
 handleVibeCodeReport(client);
 handleGatheringScheduler(client);
+handleMentionAssistant(client);
 console.log('✓ All features loaded');
 
 // Track messages

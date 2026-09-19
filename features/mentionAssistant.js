@@ -125,20 +125,57 @@ async function getRelevantMemberContext(message, userQuery, client) {
     return contextSnippets.join('\n');
 }
 
+const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+
 /**
- * Initializes the Gemini model and returns a chat-capable instance.
+ * Queries Gemini with automatic retry for transient 503/429 spikes and fallback models.
  */
-function createGeminiModel() {
-    if (!GEMINI_API_KEY) {
-        console.warn('⚠ GEMINI_API_KEY not set. @BeliX mention assistant disabled.');
-        return null;
+async function generateGeminiReply(history, promptToSend) {
+    if (!genAI) {
+        throw new Error('GEMINI_API_KEY not configured');
     }
 
-    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    return genAI.getGenerativeModel({
-        model: 'gemini-3.6-flash',
-        systemInstruction: SYSTEM_PROMPT,
-    });
+    const candidateModels = [
+        process.env.GEMINI_MODEL,
+        'gemini-3.6-flash',
+        'gemini-3.5-flash',
+        'gemini-flash-latest',
+    ].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
+
+    let lastError = null;
+
+    for (const modelName of candidateModels) {
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+                const model = genAI.getGenerativeModel({
+                    model: modelName,
+                    systemInstruction: SYSTEM_PROMPT,
+                });
+                const chat = model.startChat({ history });
+                const result = await chat.sendMessage(promptToSend);
+                const text = result.response.text();
+                return { text, modelName };
+            } catch (err) {
+                lastError = err;
+                const errStr = (err.message || '').toLowerCase();
+                const isTemporaryOverload = errStr.includes('503') || 
+                                           errStr.includes('high demand') || 
+                                           errStr.includes('resourceexhausted') || 
+                                           errStr.includes('429');
+
+                if (isTemporaryOverload && attempt === 1) {
+                    console.warn(`[Gemini] ${modelName} temporary overload (attempt 1/2). Retrying in 1.5s...`);
+                    await new Promise(r => setTimeout(r, 1500));
+                    continue;
+                }
+
+                console.warn(`[Gemini] Model ${modelName} unavailable (${err.message?.slice(0, 80)}). Trying fallback...`);
+                break;
+            }
+        }
+    }
+
+    throw lastError;
 }
 
 /**
@@ -199,7 +236,12 @@ function splitMessage(text, maxLength = 1900) {
  * Main handler — wire this into the Discord client.
  */
 function handleMentionAssistant(client) {
-    const model = createGeminiModel();
+    if (!genAI) {
+        console.warn('⚠ GEMINI_API_KEY not set. @BeliX mention assistant disabled.');
+    } else {
+        const activeModel = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+        console.log(`✓ @BeliX mention assistant loaded (${activeModel})`);
+    }
 
     client.on('messageCreate', async (message) => {
         // Ignore bots
@@ -219,7 +261,7 @@ function handleMentionAssistant(client) {
         }
 
         // If Gemini isn't configured, reply with a fallback
-        if (!model) {
+        if (!genAI) {
             return message.reply(
                 "⚠️ I'm not fully set up yet — my AI backend isn't configured. Please ask an admin to add the `GEMINI_API_KEY` to the bot's environment."
             );
@@ -261,14 +303,9 @@ function handleMentionAssistant(client) {
             // Build conversation history for this channel
             const history = getChannelHistory(message.channel.id);
 
-            // Start a chat session with history
-            const chat = model.startChat({
-                history: history,
-            });
-
-            // Send the user's message
-            const result = await chat.sendMessage(promptToSend);
-            let responseText = result.response.text();
+            // Send to Gemini with automatic retry and model fallback
+            const { text } = await generateGeminiReply(history, promptToSend);
+            let responseText = text;
 
             if (!responseText) {
                 return message.reply("Hmm, I couldn't come up with a response. Could you try rephrasing your question? 🤔");
@@ -300,9 +337,16 @@ function handleMentionAssistant(client) {
         } catch (error) {
             console.error('Gemini API error:', error.message || error);
 
-            const errorMessage = error.message?.includes('API key')
-                ? "⚠️ There's an issue with my API key configuration. Please let an admin know!"
-                : "😅 Something went wrong while I was thinking. Please try again in a moment!";
+            let errorMessage = "😅 Something went wrong while I was thinking. Please try again in a moment!";
+            const errStr = (error.message || '').toLowerCase();
+
+            if (errStr.includes('api key') || errStr.includes('api_key')) {
+                errorMessage = "⚠️ There's an issue with my API key configuration. Please let an admin know!";
+            } else if (errStr.includes('503') || errStr.includes('high demand')) {
+                errorMessage = "😅 Gemini is currently experiencing heavy global traffic (503 Service Unavailable). Please try again in a few moments!";
+            } else if (errStr.includes('429') || errStr.includes('resourceexhausted')) {
+                errorMessage = "⏳ I'm handling quite a few questions right now! Please give me a few seconds and try again.";
+            }
 
             try {
                 await message.reply(errorMessage);
@@ -311,10 +355,6 @@ function handleMentionAssistant(client) {
             }
         }
     });
-
-    if (model) {
-        console.log('✓ @BeliX mention assistant loaded (Gemini 2.0 Flash)');
-    }
 }
 
 module.exports = { handleMentionAssistant };

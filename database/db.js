@@ -116,7 +116,7 @@ async function getMemberByUsername(username) {
         const { data, error } = await supabase
             .from('members')
             .select('*')
-            .or(`username.eq.${username},discord_username.eq.${username}`)
+            .or(`name.eq.${username},discord_username.eq.${username}`)
             .single();
 
         // PGRST116 means no rows found
@@ -176,7 +176,7 @@ async function getAllMembers() {
         const { data, error } = await supabase
             .from('members')
             .select('*')
-            .order('username', { ascending: true });
+            .order('name', { ascending: true });
 
         if (error) {
             console.error('Error fetching members:', error);
@@ -184,7 +184,11 @@ async function getAllMembers() {
         }
 
         // Filter out excluded members
-        return (data || []).filter(member => !EXCLUDED_MEMBERS.includes(member.display_name) && !EXCLUDED_MEMBERS.includes(member.username));
+        return (data || []).filter(member => 
+            !EXCLUDED_MEMBERS.includes(member.display_name) && 
+            !EXCLUDED_MEMBERS.includes(member.name) &&
+            !EXCLUDED_MEMBERS.includes(member.discord_username)
+        );
     } catch (error) {
         console.error('Error getting all members:', error);
         return [];
@@ -380,7 +384,7 @@ async function getAllPoints() {
     try {
         const { data, error } = await supabase
             .from('members')
-            .select('member_id, username, display_name, belmonts_points')
+            .select('member_id, name, discord_username, display_name, belmonts_points')
             .order('belmonts_points', { ascending: false });
 
         if (error) console.error('Error fetching points:', error);
@@ -435,7 +439,7 @@ async function getLeaderboard(limit = 100) {
         // Merge members with their points (default to 0 if no points)
         // Filter out excluded members
         const leaderboard = membersData
-            .filter(member => !EXCLUDED_MEMBERS.includes(member.display_name) && !EXCLUDED_MEMBERS.includes(member.username))
+            .filter(member => !EXCLUDED_MEMBERS.includes(member.display_name) && !EXCLUDED_MEMBERS.includes(member.name) && !EXCLUDED_MEMBERS.includes(member.discord_username))
             .map(member => {
                 return {
                     member_id: member.member_id,
@@ -489,7 +493,8 @@ async function getMembersWithBirthdayToday() {
         // Filter out excluded members
         return birthdayMembers.filter(member => 
             !EXCLUDED_MEMBERS.includes(member.display_name) && 
-            !EXCLUDED_MEMBERS.includes(member.username)
+            !EXCLUDED_MEMBERS.includes(member.name) &&
+            !EXCLUDED_MEMBERS.includes(member.discord_username)
         );
     } catch (error) {
         console.error('Error getting today\'s birthdays:', error);
@@ -522,7 +527,7 @@ async function getMembersWithUpcomingBirthdays(daysAhead = 7) {
 
         for (const member of data) {
             // Skip excluded members
-            if (EXCLUDED_MEMBERS.includes(member.display_name) || EXCLUDED_MEMBERS.includes(member.username)) {
+            if (EXCLUDED_MEMBERS.includes(member.display_name) || EXCLUDED_MEMBERS.includes(member.name) || EXCLUDED_MEMBERS.includes(member.discord_username)) {
                 continue;
             }
 
@@ -742,18 +747,18 @@ async function getMemberByDiscordUsername(discordUsername) {
             console.error('Error fetching member by discord username:', error);
         }
 
-        const { data: byUsername, error: usernameError } = await supabase
+        const { data: byName, error: nameError } = await supabase
             .from('members')
             .select('*')
-            .eq('username', discordUsername)
+            .eq('name', discordUsername)
             .single();
 
-        if (byUsername) {
-            return byUsername;
+        if (byName) {
+            return byName;
         }
 
-        if (usernameError && usernameError.code !== 'PGRST116') {
-            console.error('Error fetching member by username:', usernameError);
+        if (nameError && nameError.code !== 'PGRST116') {
+            console.error('Error fetching member by name:', nameError);
         }
 
         const { data: byDisplayName, error: displayNameError } = await supabase

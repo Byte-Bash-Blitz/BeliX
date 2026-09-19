@@ -107,12 +107,12 @@ async function getRelevantMemberContext(message, userQuery, client) {
             for (const m of allMembers) {
                 const nameMatches =
                     (m.display_name && lowerQuery.includes(m.display_name.toLowerCase())) ||
-                    (m.username && lowerQuery.includes(m.username.toLowerCase())) ||
+                    (m.name && lowerQuery.includes(m.name.toLowerCase())) ||
                     (m.discord_username && lowerQuery.includes(m.discord_username.toLowerCase()));
 
                 if (nameMatches) {
                     contextSnippets.push(
-                        `Member Info for ${m.display_name || m.username}: Role: ${m.role || 'Member'}, Points: ${m.belmonts_points ?? 0}, Problems Solved: ${m.problem_solved ?? 0}.`
+                        `Member Info for ${m.name || m.display_name || m.discord_username}: Role: ${m.role || 'Member'}, Points: ${m.belmonts_points ?? 0}, Problems Solved: ${m.problem_solved ?? 0}.`
                     );
                     break;
                 }

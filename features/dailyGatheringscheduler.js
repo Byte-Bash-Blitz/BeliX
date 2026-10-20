@@ -42,13 +42,13 @@ const gatheringSession = {
     startTime: null,
     attendees: new Map(), // userId -> {username, displayName, joinedAt, leftAt}
     messageId: null,
-    endTimeout: null, // Store timeout ID so we can clear it if needed
+    endTimeout: null,
     reminderTimeout: null,
     liveTimeout: null,
 };
 
-const TIME_PROMPT_HOUR = 19; // 6 PM
-const TIME_PROMPT_MINUTE = 0; // 00 minutes
+const TIME_PROMPT_HOUR = 19 //7 pm
+const TIME_PROMPT_MINUTE = 0 // 0 mins
 
 /**
  * Ask for gathering time in tinkering channel
@@ -111,7 +111,7 @@ function scheduleGatheringPrompt(client) {
         const minutesUntil = Math.floor((delay % (1000 * 60 * 60)) / (1000 * 60));
 
         console.log(
-            `📅 [Belmonts] Next gathering prompt in ${hoursUntil}h ${minutesUntil}m`
+            `📅 [Belmonts] Next gathering prompt in ${hoursUntil}h${minutesUntil}m`
         );
 
         setTimeout(async () => {
@@ -124,81 +124,39 @@ function scheduleGatheringPrompt(client) {
 }
 
 /**
- * Post gathering announcement to common-hall
+ * Single-line gathering confirmation (Text only, no embed box)
  */
 async function postGatheringAnnouncement(client, gatheringTime, confirmedBy = null) {
     try {
         const channel = await getChannel(client, COMMON_HALL_CHANNEL_ID);
         if (!channel || !channel.isTextBased()) {
-            console.warn(`⚠ Common hall channel (${COMMON_HALL_CHANNEL_ID}) not found or not text-based`);
-            return { success: false, error: 'CHANNEL_NOT_FOUND' };
-        }
+            console.warn(`⚠ Common hall channel (${COMMON_HALL_CHANNEL_ID}) not found or not text-based`); return { success: false, error: 'CHANNEL_NOT_FOUND' }; }  const confirmedText = confirmedBy ? ` • Confirmed by: **${confirmedBy}**` : ''; const message = `<@&${BELMONTS_ROLE_ID}> 🎙️ **Daily Gathering Confirmed** | ⏰ **${gatheringTime}** | 📍 <#${VOICE_ROOM_ID}>${confirmedText}`;
 
-        const embed = new EmbedBuilder()
-            .setColor('#10B981')
-            .setTitle(`🎙️ Today's Daily Gathering Confirmed`)
-            .setDescription(`<@&${BELMONTS_ROLE_ID}> Daily Gathering has been scheduled for today!`)
-            .addFields(
-                { name: '⏰ Time', value: `**${gatheringTime}**`, inline: true },
-                { name: '🎙️ Location', value: 'Voice Channel: Common Hall', inline: true }
-            );
+        await channel.send({ content: message });
 
-        if (confirmedBy) {
-            embed.addFields({ name: '👤 Confirmed by', value: `**${confirmedBy}**`, inline: true });
-        }
-
-        embed.addFields(
-            { name: '📌 Note', value: 'Please join on time and participate actively!', inline: false }
-        );
-
-        embed.setFooter({ text: confirmedBy ? `Confirmed by: ${confirmedBy} • See you there!` : 'See you there!' })
-            .setTimestamp();
-
-        await channel.send({
-            content: `<@&${BELMONTS_ROLE_ID}> 🎙️ **Daily Gathering Confirmed for ${gatheringTime}!**`,
-            embeds: [embed]
-        });
-        console.log(`✓ Posted gathering announcement to common-hall (${COMMON_HALL_CHANNEL_ID}) at ${gatheringTime}`);
+        console.log(`✓ Posted gathering announcement to common-hall (${COMMON_HALL_CHANNEL_ID}) at${gatheringTime}`);
         return { success: true };
     } catch (error) {
         console.error(`Error posting announcement to common-hall:`, error.message);
-        if (error.code === 50001 || error.message?.includes('Missing Access')) {
-            console.error(`🚨 DISCORD PERMISSION ERROR: The bot does not have access to view or send messages in #common-hall (${COMMON_HALL_CHANNEL_ID})!`);
-            console.error(`👉 ACTION REQUIRED: In Discord, edit #common-hall channel settings -> Permissions -> Add role 'BliX' (or assign the '@Belmonts' role to the bot).`);
-        }
         return { success: false, error: error.code || error.message };
     }
 }
 
 /**
- * Send reminder 5 minutes before gathering
+ * Single-line 5-minute reminder (Text only, no embed box)
  */
 async function sendGatheringReminder(client, gatheringTime) {
     try {
+        const message = `<@&${BELMONTS_ROLE_ID}> ⏰ **Daily Gathering starts in 5 minutes!** | ⏰ **${gatheringTime}** | 📍 Join: <#${VOICE_ROOM_ID}>`;
+
         const commonHall = await getChannel(client, COMMON_HALL_CHANNEL_ID);
         if (commonHall && commonHall.isTextBased()) {
-            const embed = new EmbedBuilder()
-                .setColor('#FFD700')
-                .setTitle(`⏰ Reminder: Daily Gathering Starting in 5 Minutes!`)
-                .setDescription(`<@&${BELMONTS_ROLE_ID}> Daily Gathering will start in **5 minutes**! Get ready to join the voice room: <#${VOICE_ROOM_ID}>`)
-                .addFields(
-                    { name: '⏰ Time', value: `**${gatheringTime}**`, inline: true },
-                    { name: '🎙️ Voice Channel', value: `<#${VOICE_ROOM_ID}>`, inline: true }
-                )
-                .setFooter({ text: 'Get ready! ⏱️' })
-                .setTimestamp();
-
-            await commonHall.send({
-                content: `<@&${BELMONTS_ROLE_ID}> ⏰ **Daily Gathering starts in 5 minutes in <#${VOICE_ROOM_ID}>!**`,
-                embeds: [embed]
-            });
+            await commonHall.send({ content: message });
         }
 
         const tinkering = await getChannel(client, TINKERING_CHANNEL_ID);
         if (tinkering && tinkering.isTextBased()) {
-            await tinkering.send({
-                content: `<@&${BELMONTS_ROLE_ID}> ⏰ **Daily Gathering starts in 5 minutes in <#${VOICE_ROOM_ID}>!**`
-            });
+            await tinkering.send({ content: message });
         }
 
         console.log(`✓ Sent 5-minute reminder for gathering at ${gatheringTime}`);
@@ -208,7 +166,7 @@ async function sendGatheringReminder(client, gatheringTime) {
 }
 
 /**
- * Send announcement when gathering goes LIVE at the exact scheduled time
+ * Single-line LIVE announcement (Text only, no embed box)
  */
 async function sendGatheringLiveAnnouncement(client, gatheringTime) {
     try {
@@ -218,22 +176,10 @@ async function sendGatheringLiveAnnouncement(client, gatheringTime) {
             return;
         }
 
-        const embed = new EmbedBuilder()
-            .setColor('#EF4444')
-            .setTitle(`🔴 Daily Gathering is Live Now!`)
-            .setDescription(`<@&${BELMONTS_ROLE_ID}> Today's daily gathering has started!\n\n👉 **Join the voice channel now**: <#${VOICE_ROOM_ID}>`)
-            .addFields(
-                { name: '⏰ Started At', value: `**${gatheringTime}**`, inline: true },
-                { name: '🎙️ Voice Channel', value: `<#${VOICE_ROOM_ID}>`, inline: true },
-                { name: '📌 Note', value: 'Please join on time, participate actively, and share your daily updates! 💪✨', inline: false }
-            )
-            .setFooter({ text: 'Belmonts Daily Gathering • Happening Now 🎙️' })
-            .setTimestamp();
+        const message = `<@&${BELMONTS_ROLE_ID}> 🔴 **Daily Gathering is LIVE NOW!** | ⏰ **Started:** ${gatheringTime} | 📍 Voice Room: <#${VOICE_ROOM_ID}>`;
 
-        await channel.send({
-            content: `<@&${BELMONTS_ROLE_ID}> 🔴 **The Daily Gathering is LIVE NOW! Click to join:** <#${VOICE_ROOM_ID}>`,
-            embeds: [embed]
-        });
+        await channel.send({ content: message });
+
         console.log(`✓ Posted LIVE gathering announcement to common-hall (${COMMON_HALL_CHANNEL_ID}) at ${gatheringTime}`);
     } catch (error) {
         console.error(`Error sending live announcement:`, error.message);
@@ -247,8 +193,6 @@ async function startMeetingTracking(client, gatheringDate, gatheringTime) {
     try {
         const meetingTitle = `Daily Gathering - ${gatheringDate}`;
         const [hours, minutes] = gatheringTime.split(':');
-
-        // Use current time as the actual start_time when meeting begins
         const now = getCurrentTimeInTimeZone();
         const startTime = new Date(now);
 
@@ -259,9 +203,9 @@ async function startMeetingTracking(client, gatheringDate, gatheringTime) {
             start_time: startTime.toISOString(),
         };
 
-        // Create meeting in database
         const meeting = await createMeeting(meetingData);
         const meetingId = meeting?.meeting_id || `meeting_${Date.now()}`;
+
         if (!meeting) {
             console.warn(`⚠ Could not save meeting to database. Continuing with in-memory session ${meetingId}.`);
         }
@@ -271,7 +215,6 @@ async function startMeetingTracking(client, gatheringDate, gatheringTime) {
         gatheringSession.startTime = startTime;
         gatheringSession.attendees.clear();
 
-        // Check if any members are already in the voice channel
         try {
             const voiceChannel = await getChannel(client, VOICE_ROOM_ID);
             if (voiceChannel && voiceChannel.isVoiceBased()) {
@@ -336,13 +279,11 @@ async function trackVoiceActivity(client) {
                 if (members.size === 0 && gatheringSession.isActive) {
                     console.log(`📢 Voice channel is empty! Ending gathering and sending report...`);
 
-                    // Clear the 2-hour timeout
                     if (gatheringSession.endTimeout) {
                         clearTimeout(gatheringSession.endTimeout);
                         gatheringSession.endTimeout = null;
                     }
 
-                    // End gathering immediately
                     await endGatheringAndReport(client);
                 }
             }
@@ -360,7 +301,6 @@ async function endGatheringAndReport(client) {
     }
 
     try {
-        // Clear any pending timeout
         if (gatheringSession.endTimeout) {
             clearTimeout(gatheringSession.endTimeout);
             gatheringSession.endTimeout = null;
@@ -368,12 +308,11 @@ async function endGatheringAndReport(client) {
 
         const endTime = new Date();
         const startTime = gatheringSession.startTime;
-        const totalDurationMs = Math.abs(endTime - startTime);
+        const totalDurationMs = Math.abs(endTime.getTime() - startTime.getTime());
         const totalDurationMinutes = Math.floor(totalDurationMs / (1000 * 60));
         const hours = Math.floor(totalDurationMinutes / 60);
         const minutes = totalDurationMinutes % 60;
 
-        // Calculate attendance for each member
         const attendanceRecords = [];
         let fullyAttendedCount = 0;
 
@@ -382,11 +321,12 @@ async function endGatheringAndReport(client) {
                 attendee.leftAt = endTime;
             }
 
-            const durationMs = attendee.leftAt - attendee.joinedAt;
+            const durationMs = attendee.leftAt.getTime() - attendee.joinedAt.getTime();
             const durationMinutes = Math.floor(durationMs / (1000 * 60));
-            const attendancePercentage = Math.round((durationMinutes / totalDurationMinutes) * 100);
+            const attendancePercentage = totalDurationMinutes > 0 
+                ? Math.round((durationMinutes / totalDurationMinutes) * 100) 
+                : 100;
 
-            // Award points: 10 points for 50%+ attendance
             let pointsAwarded = 0;
             if (attendancePercentage >= 50) {
                 pointsAwarded = 10;
@@ -403,9 +343,7 @@ async function endGatheringAndReport(client) {
                 pointsAwarded,
             });
 
-            // Record attendance in database
             try {
-                // Get the database member_id by looking up the Discord ID
                 const member = await getMember(userId);
                 const memberId = member ? member.member_id : null;
 
@@ -426,42 +364,28 @@ async function endGatheringAndReport(client) {
                 };
                 await recordAttendance(gatheringSession.meetingId, attendanceData);
 
-                // Add points to member if they earned any
                 if (pointsAwarded > 0) {
                     await addPoints(memberId, pointsAwarded);
-                    console.log(`✓ Added ${pointsAwarded} points to ${attendee.displayName}`);
+                    console.log(`✓ Added ${pointsAwarded} points to${attendee.displayName}`);
                 }
             } catch (error) {
                 console.error(`Error recording attendance for ${attendee.displayName}:`, error.message);
             }
         }
 
-        // Sort by attendance percentage (descending)
         attendanceRecords.sort((a, b) => b.attendancePercentage - a.attendancePercentage);
 
-        // Build report embed
         const embed = new EmbedBuilder()
             .setColor('#10B981')
             .setTitle(`📊 Final Meeting Report`)
-            .addFields({
-                name: `📅 Daily Gathering - ${getCurrentTimeInTimeZone().toLocaleDateString()}`,
-                value: `🎙️ Channel: Common Hall`,
-                inline: false
-            })
-            .addFields({
-                name: `⏱️ Meeting Duration`,
-                value: `${hours}h ${minutes}m`,
-                inline: true
-            })
-            .addFields({
-                name: `👥 Total Attendees`,
-                value: `${gatheringSession.attendees.size}`,
-                inline: true
-            });
+            .addFields(
+                { name: `📅 Daily Gathering - ${getCurrentTimeInTimeZone().toLocaleDateString()}`, value: `🎙️ Channel: Common Hall`, inline: false },
+                { name: `⏱️ Meeting Duration`, value: `${hours}h${minutes}m`, inline: true },
+                { name: `👥 Total Attendees`, value: `${gatheringSession.attendees.size}`, inline: true }
+            );
 
-        // Add attendance details in chunks to avoid Discord field limit
         if (attendanceRecords.length > 0) {
-            const chunkSize = 20; // Split attendees into chunks of 20
+            const chunkSize = 20;
             for (let i = 0; i < attendanceRecords.length; i += chunkSize) {
                 const chunk = attendanceRecords.slice(i, i + chunkSize);
                 let attendanceText = ``;
@@ -485,10 +409,8 @@ async function endGatheringAndReport(client) {
             inline: true
         });
 
-        embed.setFooter({ text: 'Meeting concluded' })
-            .setTimestamp();
+        embed.setFooter({ text: 'Meeting concluded' }).setTimestamp();
 
-        // Send report to chamber-of-reckoning (reports channel)
         const reportsChannel = await getChannel(client, REPORTS_CHANNEL_ID);
         if (reportsChannel && reportsChannel.isTextBased()) {
             await reportsChannel.send({ embeds: [embed] });
@@ -497,7 +419,6 @@ async function endGatheringAndReport(client) {
             console.warn(`⚠ Reports channel not found`);
         }
 
-        // Update meeting end time in database
         try {
             await updateMeetingEnd(gatheringSession.meetingId, {
                 end_time: endTime.toISOString(),
@@ -508,7 +429,6 @@ async function endGatheringAndReport(client) {
             console.error(`Error updating meeting end time:`, error.message);
         }
 
-        // Reset session
         gatheringSession.isActive = false;
         gatheringSession.meetingId = null;
         gatheringSession.attendees.clear();
@@ -532,7 +452,6 @@ async function handleGatheringTimeSelection(client, interaction) {
 
         if (!interaction.isButton()) return;
 
-        // Acknowledge interaction immediately to prevent "BliX didn't respond in time"
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
         let gatheringTime = null;
@@ -548,7 +467,7 @@ async function handleGatheringTimeSelection(client, interaction) {
                 const hour12 = hh % 12 || 12;
                 const ampm = hh >= 12 ? 'PM' : 'AM';
                 const minuteStr = mm.toString().padStart(2, '0');
-                gatheringTime = `${hh.toString().padStart(2, '0')}:${minuteStr} (${hour12}:${minuteStr} ${ampm})`;
+                gatheringTime = `${hh.toString().padStart(2, '0')}:${minuteStr} (${hour12}:${minuteStr}${ampm})`;
             }
         }
 
@@ -560,7 +479,6 @@ async function handleGatheringTimeSelection(client, interaction) {
         const today = getCurrentTimeInTimeZone().toISOString().split('T')[0];
 
         if (isCancellation) {
-            // Cancel any pending scheduled timeouts
             if (gatheringSession.reminderTimeout) {
                 clearTimeout(gatheringSession.reminderTimeout);
                 gatheringSession.reminderTimeout = null;
@@ -577,46 +495,26 @@ async function handleGatheringTimeSelection(client, interaction) {
             gatheringSession.meetingId = null;
             gatheringSession.attendees.clear();
 
-            // Cancel gathering in database
             await cancelGathering(today, userId, displayName);
 
-            // Send cancellation notification to common-hall
             const channel = await getChannel(client, COMMON_HALL_CHANNEL_ID);
             let sendError = null;
             if (channel && channel.isTextBased()) {
                 try {
-                    const cancelEmbed = new EmbedBuilder()
-                        .setColor('#EF4444')
-                        .setTitle(`❌ Daily Gathering Cancelled`)
-                        .setDescription(`<@&${BELMONTS_ROLE_ID}> Today's Daily Gathering has been cancelled.`)
-                        .addFields(
-                            { name: 'Status', value: `❌ Cancelled for today`, inline: true },
-                            { name: 'Cancelled by', value: `**${displayName}**`, inline: true }
-                        )
-                        .setFooter({ text: `Cancelled by: ${displayName}` })
-                        .setTimestamp();
-
+                    // Send cancellation in clean plain text (no embed card)
                     await channel.send({
-                        content: `<@&${BELMONTS_ROLE_ID}> ❌ **Today's Daily Gathering has been cancelled.**`,
-                        embeds: [cancelEmbed]
+                        content: `<@&${BELMONTS_ROLE_ID}> ❌ **Daily Gathering Cancelled** | Cancelled by: **${displayName}**`
                     });
                     console.log(`✓ Posted gathering cancellation to common-hall (${COMMON_HALL_CHANNEL_ID})`);
                 } catch (err) {
                     sendError = err;
                     console.error(`Error posting cancellation to common-hall:`, err.message);
-                    if (err.code === 50001 || err.message?.includes('Missing Access')) {
-                        console.error(`🚨 DISCORD PERMISSION ERROR: The bot lacks permission to view or send messages in #common-hall (${COMMON_HALL_CHANNEL_ID})!`);
-                        console.error(`👉 ACTION REQUIRED: In Discord, edit #common-hall channel settings -> Permissions -> Add role 'BliX' (or assign the '@Belmonts' role to the bot).`);
-                    }
                 }
-            } else {
-                console.warn(`⚠ Common hall channel (${COMMON_HALL_CHANNEL_ID}) not found or not text-based`);
             }
 
-            // Ephemeral confirmation to the user who clicked
             let cancelDesc = `Today's gathering has been cancelled by **${displayName}**.\nNotice has been sent to <#${COMMON_HALL_CHANNEL_ID}>!`;
             if (sendError && (sendError.code === 50001 || sendError.message?.includes('Missing Access'))) {
-                cancelDesc = `Today's gathering has been cancelled.\n\n⚠️ **Permission Alert**: The bot could not post to <#${COMMON_HALL_CHANNEL_ID}> because the bot is missing **View Channel** access in \`#common-hall\`! Please assign the **@Belmonts** role to the bot in Discord.`;
+                cancelDesc = `Today's gathering has been cancelled.\n\n⚠️ **Permission Alert**: Missing **View Channel** access in \`#common-hall\`!`;
             }
 
             const embed = new EmbedBuilder()
@@ -627,20 +525,16 @@ async function handleGatheringTimeSelection(client, interaction) {
 
             await interaction.editReply({ embeds: [embed] });
 
-            // Disable buttons on the original tinkering prompt message to avoid duplicate clicks
             try {
                 if (interaction.message?.components?.length > 0) {
                     const row = ActionRowBuilder.from(interaction.message.components[0]);
                     row.components.forEach(btn => btn.setDisabled(true));
                     await interaction.message.edit({ components: [row] });
                 }
-            } catch (err) {
-                // Ignore if unable to edit prompt message
-            }
+            } catch (err) {}
 
             console.log(`✓ Gathering cancelled by ${displayName}`);
         } else if (gatheringTime) {
-            // Clear any previously scheduled timeouts if rescheduling
             if (gatheringSession.reminderTimeout) {
                 clearTimeout(gatheringSession.reminderTimeout);
                 gatheringSession.reminderTimeout = null;
@@ -654,18 +548,15 @@ async function handleGatheringTimeSelection(client, interaction) {
                 gatheringSession.endTimeout = null;
             }
 
-            // Confirm gathering with time in database
             const timeStr = gatheringTime.split(' ')[0] + ':00';
             await confirmGathering(userId, displayName, today, timeStr);
             await updateGatheringTime(today, gatheringTime.split(' ')[0]);
 
-            // Send confirmation announcement to common-hall
             const announceResult = await postGatheringAnnouncement(client, gatheringTime, displayName);
 
-            // Ephemeral confirmation to the user who clicked
             let confirmDesc = `Gathering confirmed for today at **${gatheringTime}**.\nConfirmation announcement has been posted to <#${COMMON_HALL_CHANNEL_ID}>!`;
             if (!announceResult.success && (announceResult.error === 50001 || String(announceResult.error).includes('Missing Access'))) {
-                confirmDesc = `Gathering confirmed for today at **${gatheringTime}**.\n\n⚠️ **Permission Alert**: The bot could not post to <#${COMMON_HALL_CHANNEL_ID}> because the bot is missing **View Channel** access in \`#common-hall\`! Please assign the **@Belmonts** role to the bot in Discord.`;
+                confirmDesc = `Gathering confirmed for today at **${gatheringTime}**.\n\n⚠️ **Permission Alert**: Missing **View Channel** access in \`#common-hall\`!`;
             }
 
             const embed = new EmbedBuilder()
@@ -677,29 +568,24 @@ async function handleGatheringTimeSelection(client, interaction) {
 
             await interaction.editReply({ embeds: [embed] });
 
-            // Disable buttons on the original tinkering prompt message to avoid duplicate clicks
             try {
                 if (interaction.message?.components?.length > 0) {
                     const row = ActionRowBuilder.from(interaction.message.components[0]);
                     row.components.forEach(btn => btn.setDisabled(true));
                     await interaction.message.edit({ components: [row] });
                 }
-            } catch (err) {
-                // Ignore if unable to edit prompt message
-            }
+            } catch (err) {}
 
-            // Calculate delay to exact meeting time using timezone utility
             const [time] = gatheringTime.split(' ');
             const [hours, minutes] = time.split(':');
             const targetHour = parseInt(hours, 10);
             const targetMinute = parseInt(minutes, 10);
 
             const delayToLiveMs = getDelayUntilNextScheduledTime(targetHour, targetMinute);
-            const delayToReminderMs = Math.max(0, delayToLiveMs - 5 * 60 * 1000);
+            const delayToReminderMs = Math.max(0, delayToLiveMs - (5 * 60 * 1000));
 
             console.log(`⏰ Gathering scheduled for ${gatheringTime}: Live in ${Math.round(delayToLiveMs / 1000 / 60)}m, Reminder in ${Math.round(delayToReminderMs / 1000 / 60)}m`);
 
-            // Schedule 5-minute reminder if more than 5 minutes away
             if (delayToReminderMs > 0) {
                 gatheringSession.reminderTimeout = setTimeout(() => {
                     sendGatheringReminder(client, gatheringTime);
@@ -707,13 +593,11 @@ async function handleGatheringTimeSelection(client, interaction) {
                 console.log(`✓ 5-minute reminder scheduled for ${Math.round(delayToReminderMs / 1000 / 60)} minutes from now`);
             }
 
-            // Schedule LIVE announcement and session start at the exact chosen time (e.g. 8:30 PM)
             const dateStr = getCurrentTimeInTimeZone().toISOString().split('T')[0];
             const startLiveSession = async () => {
                 await sendGatheringLiveAnnouncement(client, gatheringTime);
                 await startMeetingTracking(client, dateStr, time);
 
-                // Schedule meeting conclusion after 2 hours (or earlier if everyone leaves once active)
                 gatheringSession.endTimeout = setTimeout(() => {
                     endGatheringAndReport(client);
                 }, 2 * 60 * 60 * 1000);
@@ -723,7 +607,6 @@ async function handleGatheringTimeSelection(client, interaction) {
                 gatheringSession.liveTimeout = setTimeout(startLiveSession, delayToLiveMs);
                 console.log(`✓ LIVE meeting announcement scheduled for ${gatheringTime} (in ${Math.round(delayToLiveMs / 1000 / 60)} minutes)`);
             } else {
-                // Scheduled for right now
                 await startLiveSession();
             }
 
@@ -737,9 +620,7 @@ async function handleGatheringTimeSelection(client, interaction) {
             } else if (!interaction.replied) {
                 await interaction.reply({ content: `⚠️ Error processing gathering selection: ${error.message}`, flags: MessageFlags.Ephemeral });
             }
-        } catch (e) {
-            // Ignore secondary failure
-        }
+        } catch (e) {}
     }
 }
 
@@ -759,7 +640,6 @@ function handleGatheringScheduler(client) {
         client.once('ready', init);
     }
 
-    // Handle button interactions
     client.on('interactionCreate', (interaction) => {
         if (interaction.customId?.startsWith('gathering_')) {
             handleGatheringTimeSelection(client, interaction);

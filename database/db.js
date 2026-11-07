@@ -981,25 +981,80 @@ async function getAttendanceAnalytics(limit = 30) {
 
         const meetingIds = (meetings || []).map(meeting => meeting.meeting_id);
         if (meetingIds.length === 0) {
-            return { totalMeetings: 0, totalUniqueAttendees: 0, presentMembers: 0, shortDurationMembers: 0, totalVoiceMinutes: 0, averageAttendanceMinutes: 0, history: [] };
+            return { totalMeetings: 0, totalUniqueAttendees: 0, presentMembers: 0, shortDurationMembers: 0, totalVoiceMinutes: 0, averageAttendanceMinutes: 0, history: [], records: [] };
         }
 
         const { data: attendance, error: attendanceError } = await supabase
             .from('meeting_attendance')
-            .select('meeting_id, member_id, display_name, total_duration_minutes, attendance_status')
+            .select('meeting_attendance_id, meeting_id, member_id, display_name, username, total_duration_minutes, voice_duration_minutes, attendance_status, points_awarded, joined_at, left_at')
             .in('meeting_id', meetingIds);
         if (attendanceError) throw attendanceError;
 
-        const rows = attendance || [];
-        const totalVoiceMinutes = rows.reduce((total, row) => total + Number(row.total_duration_minutes || 0), 0);
+        let voiceSessionsData = [];
+        try {
+            const { data: vSessions } = await supabase
+                .from('meeting_voice_sessions')
+                .select('*')
+                .in('meeting_id', meetingIds);
+            voiceSessionsData = vSessions || [];
+        } catch (vErr) {
+            console.warn('Voice sessions query notice:', vErr.message);
+        }
+
+        const meetingDateMap = new Map();
+        (meetings || []).forEach(m => meetingDateMap.set(m.meeting_id, m.meeting_date));
+
+        const rows = (attendance || []).map(row => {
+            const duration = Number(row.total_duration_minutes || row.voice_duration_minutes || 0);
+            const is45Plus = duration >= 45;
+            const status = row.attendance_status || (is45Plus ? 'PRESENT' : 'SHORT DURATION');
+
+            // Find all voice intervals (entry and exit) for this member in this meeting
+            const matchedSessions = voiceSessionsData
+                .filter(vs => vs.meeting_id === row.meeting_id && (
+                    (row.member_id && vs.member_id === row.member_id) ||
+                    (row.display_name && vs.display_name === row.display_name) ||
+                    (row.username && vs.username === row.username)
+                ))
+                .sort((a, b) => new Date(a.joined_at) - new Date(b.joined_at));
+
+            const sessions = matchedSessions.length > 0
+                ? matchedSessions.map((s, idx) => ({
+                    sessionNumber: idx + 1,
+                    joinedAt: s.joined_at,
+                    leftAt: s.left_at,
+                    durationMinutes: Number(s.duration_minutes || 0)
+                }))
+                : (row.joined_at ? [{
+                    sessionNumber: 1,
+                    joinedAt: row.joined_at,
+                    leftAt: row.left_at,
+                    durationMinutes: duration
+                }] : []);
+
+            return {
+                ...row,
+                total_duration_minutes: duration,
+                attendance_status: status,
+                is45Plus,
+                meeting_date: meetingDateMap.get(row.meeting_id) || '',
+                points_awarded: row.points_awarded !== undefined ? row.points_awarded : (is45Plus ? 10 : 0),
+                sessions,
+                joinCount: Math.max(1, sessions.length),
+                isRejoined: sessions.length > 1
+            };
+        });
+
+        const totalVoiceMinutes = rows.reduce((total, row) => total + row.total_duration_minutes, 0);
         return {
             totalMeetings: meetings.length,
             totalUniqueAttendees: new Set(rows.map(row => row.member_id)).size,
-            presentMembers: rows.filter(row => row.attendance_status === 'PRESENT').length,
-            shortDurationMembers: rows.filter(row => row.attendance_status === 'SHORT DURATION').length,
+            presentMembers: rows.filter(row => row.is45Plus).length,
+            shortDurationMembers: rows.filter(row => !row.is45Plus).length,
             totalVoiceMinutes,
             averageAttendanceMinutes: rows.length ? Math.round(totalVoiceMinutes / rows.length) : 0,
             history: meetings.map(meeting => ({ ...meeting, attendance: rows.filter(row => row.meeting_id === meeting.meeting_id) })),
+            records: rows,
         };
     } catch (error) {
         console.error('Error getting attendance analytics:', error);

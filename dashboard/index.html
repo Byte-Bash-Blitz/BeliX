@@ -3,39 +3,112 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BeliX Control Panel</title>
+  <title>BeliX - Discord Bot Management</title>
   <link rel="stylesheet" href="/dashboard.css">
 </head>
 <body>
   <div class="app-shell">
+    <!-- Left Navigation Sidebar -->
     <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">B</span><div><strong>BeliX</strong><small>Bot control panel</small></div></div>
-      <nav id="nav">
-        <button class="nav-item active" data-page="overview">◈ <span>Overview</span></button>
-        <button class="nav-item" data-page="bot">● <span>Bot Management</span></button>
-        <button class="nav-item" data-page="server">▣ <span>Server Management</span></button>
-        <button class="nav-item" data-page="members">♙ <span>Member Management</span></button>
-        <button class="nav-item" data-page="commands">⌘ <span>Commands</span></button>
-        <button class="nav-item" data-page="moderation">✓ <span>Moderation</span></button>
-        <button class="nav-item" data-page="ai">✦ <span>Blix AI</span></button>
-        <button class="nav-item" data-page="gatherings">◉ <span>Daily Gatherings</span></button>
-        <button class="nav-item" data-page="attendance">◷ <span>Attendance</span></button>
-        <button class="nav-item" data-page="reports">▥ <span>Reports & Analytics</span></button>
-        <button class="nav-item" data-page="logs">≡ <span>Activity Logs</span></button>
-        <button class="nav-item" data-page="integrations">⌁ <span>Integrations</span></button>
-        <button class="nav-item" data-page="settings">⚙ <span>Settings</span></button>
+      <div class="brand">
+        <span class="brand-mark">B</span>
+        <div class="brand-text">
+          <strong>BeliX</strong>
+          <small>Bot control panel</small>
+        </div>
+      </div>
+
+      <nav id="nav" class="nav">
+        <button class="nav-item" data-page="overview">
+          <span class="icon">◈</span>
+          <span>Overview</span>
+        </button>
+        <button class="nav-item active" data-page="bot">
+          <span class="icon">●</span>
+          <span>Bot Management</span>
+        </button>
+        <button class="nav-item" data-page="server">
+          <span class="icon">⊞</span>
+          <span>Server Management</span>
+        </button>
+        <button class="nav-item" data-page="members">
+          <span class="icon">♙</span>
+          <span>Member Management</span>
+        </button>
+        <button class="nav-item" data-page="commands">
+          <span class="icon">⌘</span>
+          <span>Commands</span>
+        </button>
+        <button class="nav-item" data-page="moderation">
+          <span class="icon">🛡️</span>
+          <span>Moderation</span>
+        </button>
+        <button class="nav-item" data-page="ai">
+          <span class="icon">✦</span>
+          <span>Blix AI</span>
+        </button>
+        <button class="nav-item" data-page="gatherings">
+          <span class="icon">◉</span>
+          <span>Daily Gatherings</span>
+        </button>
+        <button class="nav-item" data-page="attendance">
+          <span class="icon">◷</span>
+          <span>Attendance</span>
+        </button>
+        <button class="nav-item" data-page="reports">
+          <span class="icon">▥</span>
+          <span>Reports & Analytics</span>
+        </button>
+        <button class="nav-item" data-page="logs">
+          <span class="icon">≡</span>
+          <span>Activity Logs</span>
+        </button>
+        <button class="nav-item" data-page="integrations">
+          <span class="icon">⌁</span>
+          <span>Integrations</span>
+        </button>
+        <button class="nav-item" data-page="settings">
+          <span class="icon">⚙</span>
+          <span>Settings</span>
+        </button>
       </nav>
-      <div class="sidebar-footer"><span class="status-dot"></span><span id="connection-text">Connecting...</span></div>
+
+      <div class="sidebar-footer">
+        <span class="status-dot"></span>
+        <span id="connection-text">Bot online</span>
+      </div>
     </aside>
+
+    <!-- Main Content View -->
     <main class="main">
       <header class="topbar">
-        <div><div class="eyebrow">DISCORD BOT MANAGEMENT</div><h1 id="page-title">Overview</h1></div>
-        <div class="top-actions"><span class="server-pill">◈ <span id="server-name">Loading server...</span></span><button class="icon-button" id="refresh">↻</button><button class="profile">Admin <span>⌄</span></button></div>
+        <div>
+          <div class="eyebrow" id="page-eyebrow">DISCORD BOT MANAGEMENT</div>
+          <h1 class="page-title" id="page-title">Bot Management</h1>
+          <p class="page-subtitle" id="page-subtitle">Monitor and manage your BeliX bot in real-time.</p>
+        </div>
+
+        <div class="top-actions">
+          <button class="glass-pill" id="server-btn">
+            <span>◈</span>
+            <span id="server-name">Belmonts</span>
+            <span>⌄</span>
+          </button>
+          <button class="glass-icon-btn" id="refresh" title="Refresh Live Metrics">⟳</button>
+          <button class="glass-pill" id="admin-btn">
+            <span>Admin</span>
+            <span>⌄</span>
+          </button>
+        </div>
       </header>
+
+      <!-- Dynamic Page Container -->
       <section id="content" class="content"></section>
     </main>
   </div>
+
   <div id="toast" class="toast"></div>
+
   <script src="/dashboard.js"></script>
 </body>
 </html>

@@ -53,17 +53,80 @@ const gatheringSession = {
 const TIME_PROMPT_HOUR = 19 //7 pm
 const TIME_PROMPT_MINUTE = 0 // 0 mins
 
-function getGatheringSnapshot() {
+function getGatheringSnapshot(client = null) {
+    let liveVoiceMembers = [];
+    if (client) {
+        try {
+            const voiceChannel = client.channels.cache.get(VOICE_ROOM_ID);
+            if (voiceChannel && voiceChannel.members) {
+                liveVoiceMembers = Array.from(voiceChannel.members.values())
+                    .filter(m => !m.user.bot)
+                    .map(m => ({
+                        userId: m.id,
+                        displayName: m.displayName || m.user.username,
+                        username: m.user.username,
+                        joinedAt: m.voice?.joinedAt ? m.voice.joinedAt.toISOString() : new Date().toISOString(),
+                        avatar: m.user.displayAvatarURL ? m.user.displayAvatarURL({ size: 64 }) : null,
+                    }));
+            }
+        } catch (err) {
+            console.warn('Could not read voiceChannel members for snapshot:', err.message);
+        }
+    }
+
+    const participants = Array.from(gatheringSession.attendees.entries()).map(([userId, attendee]) => {
+        const totalSessionMs = (attendee.sessions || []).reduce((acc, s) => {
+            const end = s.leftAt ? s.leftAt.getTime() : Date.now();
+            return acc + Math.max(0, end - s.joinedAt.getTime());
+        }, 0);
+        const liveMs = attendee.currentJoinAt ? Math.max(0, Date.now() - attendee.currentJoinAt.getTime()) : 0;
+        const totalDurationMinutes = Math.floor((totalSessionMs + liveMs) / 60000);
+
+        // Map individual session intervals (entries and exits)
+        const sessions = (attendee.sessions || []).map((s, idx) => ({
+            sessionNumber: idx + 1,
+            joinedAt: s.joinedAt ? s.joinedAt.toISOString() : null,
+            leftAt: s.leftAt ? s.leftAt.toISOString() : null,
+            durationMinutes: s.leftAt ? Math.round((s.leftAt.getTime() - s.joinedAt.getTime()) / 60000) : 0,
+            isActive: false,
+        }));
+
+        if (attendee.currentJoinAt) {
+            const currentDurMin = Math.round((Date.now() - attendee.currentJoinAt.getTime()) / 60000);
+            sessions.push({
+                sessionNumber: sessions.length + 1,
+                joinedAt: attendee.currentJoinAt.toISOString(),
+                leftAt: null,
+                durationMinutes: currentDurMin,
+                isActive: true,
+            });
+        }
+
+        return {
+            userId,
+            displayName: attendee.displayName,
+            username: attendee.username,
+            active: Boolean(attendee.currentJoinAt),
+            joinedAt: attendee.currentJoinAt?.toISOString() || attendee.sessions?.[0]?.joinedAt?.toISOString() || null,
+            firstJoinedAt: sessions[0]?.joinedAt || null,
+            lastLeftAt: attendee.currentJoinAt ? null : (sessions[sessions.length - 1]?.leftAt || null),
+            totalDurationMinutes,
+            isEligible45: totalDurationMinutes >= 45,
+            status: Boolean(attendee.currentJoinAt) ? 'In Voice' : 'Left',
+            sessions,
+            joinCount: Math.max(1, sessions.length),
+            isRejoined: sessions.length > 1,
+        };
+    });
+
     return {
         isActive: gatheringSession.isActive,
         meetingId: gatheringSession.meetingId,
         startTime: gatheringSession.startTime?.toISOString() || null,
-        participantCount: gatheringSession.attendees.size,
-        participants: Array.from(gatheringSession.attendees.values()).map(attendee => ({
-            displayName: attendee.displayName,
-            username: attendee.username,
-            active: Boolean(attendee.currentJoinAt),
-        })),
+        participantCount: participants.length,
+        participants,
+        liveVoiceMembers,
+        voiceRoomId: VOICE_ROOM_ID,
     };
 }
 

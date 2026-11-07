@@ -8,8 +8,11 @@ const {
     createMeeting,
     updateMeetingEnd,
     recordAttendance,
+    recordVoiceSession,
+    getMeetingVoiceSessions,
+    getActiveMeeting,
+    awardMeetingPoints,
     getMember,
-    addPoints
 } = require('../database/db');
 
 // Channel IDs
@@ -40,7 +43,7 @@ const gatheringSession = {
     isActive: false,
     meetingId: null,
     startTime: null,
-    attendees: new Map(), // userId -> {username, displayName, joinedAt, leftAt}
+    attendees: new Map(), // userId -> {username, displayName, sessions, currentJoinAt}
     messageId: null,
     endTimeout: null,
     reminderTimeout: null,
@@ -49,6 +52,20 @@ const gatheringSession = {
 
 const TIME_PROMPT_HOUR = 19 //7 pm
 const TIME_PROMPT_MINUTE = 0 // 0 mins
+
+function getGatheringSnapshot() {
+    return {
+        isActive: gatheringSession.isActive,
+        meetingId: gatheringSession.meetingId,
+        startTime: gatheringSession.startTime?.toISOString() || null,
+        participantCount: gatheringSession.attendees.size,
+        participants: Array.from(gatheringSession.attendees.values()).map(attendee => ({
+            displayName: attendee.displayName,
+            username: attendee.username,
+            active: Boolean(attendee.currentJoinAt),
+        })),
+    };
+}
 
 /**
  * Ask for gathering time in tinkering channel
@@ -223,8 +240,8 @@ async function startMeetingTracking(client, gatheringDate, gatheringTime) {
                         gatheringSession.attendees.set(m.id, {
                             username: m.user.username,
                             displayName: m.displayName || m.user.username,
-                            joinedAt: new Date(),
-                            leftAt: null,
+                            sessions: [],
+                            currentJoinAt: new Date(),
                         });
                         console.log(`✓ ${m.displayName} already in voice channel at gathering start`);
                     }
@@ -249,43 +266,48 @@ async function trackVoiceActivity(client) {
 
         const voiceChannelId = VOICE_ROOM_ID;
         const userId = newState.id;
-        const member = newState.member;
+        const member = newState.member || oldState.member;
+        if (member?.user?.bot) return;
 
-        // User joined the gathering voice channel
-        if (!oldState.channel && newState.channel?.id === voiceChannelId) {
+        const joinedCommonHall = newState.channel?.id === voiceChannelId && oldState.channel?.id !== voiceChannelId;
+        const leftCommonHall = oldState.channel?.id === voiceChannelId && newState.channel?.id !== voiceChannelId;
+
+        if (joinedCommonHall) {
             const displayName = member?.displayName || member?.user.username;
-            gatheringSession.attendees.set(userId, {
+            const attendee = gatheringSession.attendees.get(userId) || {
                 username: member?.user.username,
-                displayName: displayName,
-                joinedAt: new Date(),
-                leftAt: null,
-            });
+                displayName,
+                sessions: [],
+                currentJoinAt: null,
+            };
+            attendee.currentJoinAt = new Date();
+            attendee.username = member?.user.username || attendee.username;
+            attendee.displayName = displayName || attendee.displayName;
+            gatheringSession.attendees.set(userId, attendee);
             console.log(`✓ ${displayName} joined gathering`);
         }
 
-        // User left the gathering voice channel
-        if (oldState.channel?.id === voiceChannelId && !newState.channel) {
+        if (leftCommonHall) {
             const attendee = gatheringSession.attendees.get(userId);
-            if (attendee) {
-                attendee.leftAt = new Date();
-                console.log(`✓ ${attendee.displayName} left gathering`);
-            }
-
-            // Check if voice channel is now empty
-            const voiceChannel = client.channels.cache.get(voiceChannelId);
-            if (voiceChannel && voiceChannel.isVoiceBased()) {
-                const members = voiceChannel.members.filter(m => !m.user.bot);
-
-                if (members.size === 0 && gatheringSession.isActive) {
-                    console.log(`📢 Voice channel is empty! Ending gathering and sending report...`);
-
-                    if (gatheringSession.endTimeout) {
-                        clearTimeout(gatheringSession.endTimeout);
-                        gatheringSession.endTimeout = null;
-                    }
-
-                    await endGatheringAndReport(client);
+            if (attendee?.currentJoinAt) {
+                const leftAt = new Date();
+                const session = { joinedAt: attendee.currentJoinAt, leftAt };
+                attendee.sessions.push(session);
+                attendee.currentJoinAt = null;
+                const databaseMember = await getMember(userId);
+                if (databaseMember?.member_id) {
+                    await recordVoiceSession({
+                        meeting_id: gatheringSession.meetingId,
+                        member_id: databaseMember.member_id,
+                        discord_user_id: userId,
+                        display_name: attendee.displayName,
+                        username: attendee.username,
+                        joined_at: session.joinedAt.toISOString(),
+                        left_at: leftAt.toISOString(),
+                        duration_minutes: Math.floor((leftAt - session.joinedAt) / 60000),
+                    });
                 }
+                console.log(`✓ ${attendee.displayName} left gathering; session saved`);
             }
         }
     });
@@ -314,32 +336,45 @@ async function endGatheringAndReport(client) {
         const minutes = totalDurationMinutes % 60;
 
         const attendanceRecords = [];
-        let fullyAttendedCount = 0;
+        let presentCount = 0;
+        let shortDurationCount = 0;
 
         for (const [userId, attendee] of gatheringSession.attendees) {
-            if (!attendee.leftAt) {
-                attendee.leftAt = endTime;
-            }
-
-            const durationMs = attendee.leftAt.getTime() - attendee.joinedAt.getTime();
-            const durationMinutes = Math.floor(durationMs / (1000 * 60));
-            const attendancePercentage = totalDurationMinutes > 0 
-                ? Math.round((durationMinutes / totalDurationMinutes) * 100) 
-                : 100;
-
-            let pointsAwarded = 0;
-            if (attendancePercentage >= 50) {
-                pointsAwarded = 10;
-                if (attendancePercentage >= 95) {
-                    fullyAttendedCount++;
+            if (attendee.currentJoinAt) {
+                const session = { joinedAt: attendee.currentJoinAt, leftAt: endTime };
+                attendee.sessions.push(session);
+                attendee.currentJoinAt = null;
+                const databaseMember = await getMember(userId);
+                if (databaseMember?.member_id) {
+                    await recordVoiceSession({
+                        meeting_id: gatheringSession.meetingId,
+                        member_id: databaseMember.member_id,
+                        discord_user_id: userId,
+                        display_name: attendee.displayName,
+                        username: attendee.username,
+                        joined_at: session.joinedAt.toISOString(),
+                        left_at: endTime.toISOString(),
+                        duration_minutes: Math.floor((endTime - session.joinedAt) / 60000),
+                    });
                 }
             }
+
+            const joinedAt = attendee.sessions[0]?.joinedAt || endTime;
+            const leftAt = attendee.sessions[attendee.sessions.length - 1]?.leftAt || endTime;
+            const durationMs = attendee.sessions.reduce((total, session) => (
+                total + Math.max(0, session.leftAt.getTime() - session.joinedAt.getTime())
+            ), 0);
+            const durationMinutes = Math.floor(durationMs / (1000 * 60));
+            const attendanceStatus = durationMinutes >= 45 ? 'PRESENT' : 'SHORT DURATION';
+            const pointsAwarded = attendanceStatus === 'PRESENT' ? 10 : 0;
+            if (attendanceStatus === 'PRESENT') presentCount++;
+            else shortDurationCount++;
 
             attendanceRecords.push({
                 userId,
                 displayName: attendee.displayName,
                 durationMinutes,
-                attendancePercentage,
+                attendanceStatus,
                 pointsAwarded,
             });
 
@@ -356,24 +391,26 @@ async function endGatheringAndReport(client) {
                     member_id: memberId,
                     username: attendee.username,
                     display_name: attendee.displayName,
-                    joined_at: attendee.joinedAt.toISOString(),
-                    left_at: attendee.leftAt.toISOString(),
+                    joined_at: joinedAt.toISOString(),
+                    left_at: leftAt.toISOString(),
                     total_duration_minutes: durationMinutes,
-                    attendance_percentage: attendancePercentage,
+                    voice_duration_minutes: durationMinutes,
+                    attendance_status: attendanceStatus,
+                    attendance_percentage: attendanceStatus === 'PRESENT' ? 100 : 0,
                     points_awarded: pointsAwarded,
                 };
                 await recordAttendance(gatheringSession.meetingId, attendanceData);
 
                 if (pointsAwarded > 0) {
-                    await addPoints(memberId, pointsAwarded);
-                    console.log(`✓ Added ${pointsAwarded} points to${attendee.displayName}`);
+                    const awarded = await awardMeetingPoints(gatheringSession.meetingId, memberId, pointsAwarded);
+                    if (awarded) console.log(`✓ Added ${pointsAwarded} points to ${attendee.displayName}`);
                 }
             } catch (error) {
                 console.error(`Error recording attendance for ${attendee.displayName}:`, error.message);
             }
         }
 
-        attendanceRecords.sort((a, b) => b.attendancePercentage - a.attendancePercentage);
+        attendanceRecords.sort((a, b) => b.durationMinutes - a.durationMinutes);
 
         const embed = new EmbedBuilder()
             .setColor('#10B981')
@@ -390,8 +427,8 @@ async function endGatheringAndReport(client) {
                 const chunk = attendanceRecords.slice(i, i + chunkSize);
                 let attendanceText = ``;
                 chunk.forEach((record) => {
-                    const medal = record.attendancePercentage >= 95 ? `⭐` : ``;
-                    attendanceText += `${medal} **${record.displayName}** - ${record.durationMinutes}m (${record.attendancePercentage}%)\n`;
+                    const statusIcon = record.attendanceStatus === 'PRESENT' ? '✅' : '⏳';
+                    attendanceText += `${statusIcon} **${record.displayName}** - ${record.durationMinutes}m (${record.attendanceStatus}) • +${record.pointsAwarded} points\n`;
                 });
 
                 const fieldName = i === 0 ? `📋 Attendance List` : `📋 Attendance List (cont'd)`;
@@ -404,8 +441,13 @@ async function endGatheringAndReport(client) {
         }
 
         embed.addFields({
-            name: `⭐ Full Attendance (95%+)`,
-            value: `${fullyAttendedCount} members`,
+            name: `✅ PRESENT (45m+)`,
+            value: `${presentCount} members`,
+            inline: true
+        });
+        embed.addFields({
+            name: `⏳ SHORT DURATION`,
+            value: `${shortDurationCount} members`,
             inline: true
         });
 
@@ -628,10 +670,46 @@ async function handleGatheringTimeSelection(client, interaction) {
  * Initialize gathering scheduler
  */
 function handleGatheringScheduler(client) {
-    const init = () => {
+    const init = async () => {
         console.log('✓ Belmonts - gathering scheduler enabled');
         scheduleGatheringPrompt(client);
         trackVoiceActivity(client);
+        const activeMeeting = await getActiveMeeting();
+        if (activeMeeting) {
+            const sessions = await getMeetingVoiceSessions(activeMeeting.meeting_id);
+            gatheringSession.isActive = true;
+            gatheringSession.meetingId = activeMeeting.meeting_id;
+            gatheringSession.startTime = new Date(activeMeeting.start_time);
+            for (const session of sessions) {
+                if (!session.discord_user_id) continue;
+                const attendee = gatheringSession.attendees.get(session.discord_user_id) || {
+                    username: session.username,
+                    displayName: session.display_name || session.username || session.discord_user_id,
+                    sessions: [],
+                    currentJoinAt: null,
+                };
+                attendee.sessions.push({
+                    joinedAt: new Date(session.joined_at),
+                    leftAt: new Date(session.left_at),
+                });
+                gatheringSession.attendees.set(session.discord_user_id, attendee);
+            }
+            const voiceChannel = await getChannel(client, VOICE_ROOM_ID);
+            if (voiceChannel?.isVoiceBased()) {
+                voiceChannel.members.forEach(member => {
+                    if (member.user.bot) return;
+                    const attendee = gatheringSession.attendees.get(member.id) || {
+                        username: member.user.username,
+                        displayName: member.displayName || member.user.username,
+                        sessions: [],
+                        currentJoinAt: null,
+                    };
+                    if (!attendee.currentJoinAt) attendee.currentJoinAt = new Date();
+                    gatheringSession.attendees.set(member.id, attendee);
+                });
+            }
+            console.log(`✓ Recovered active gathering ${activeMeeting.meeting_id} from Supabase`);
+        }
     };
 
     if (client.isReady && client.isReady()) {
@@ -649,5 +727,6 @@ function handleGatheringScheduler(client) {
 
 module.exports = {
     handleGatheringScheduler,
-    endGatheringAndReport
+    endGatheringAndReport,
+    getGatheringSnapshot,
 };

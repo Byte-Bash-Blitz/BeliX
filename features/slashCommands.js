@@ -3,6 +3,8 @@ const { buildLeaderboardEmbed, getLeaderboardButtons, buildMyPointsEmbed } = req
 const { loadTerminologies, postDailyTerminology } = require('./dailyTerminology');
 const { getLeaderboard, getMember, getMemberByUsername, getMemberByDiscordID, getMemberByDiscordUsername, getPoints, initializePoints, syncMember } = require('../database/db');
 const { getVoiceSlashCommands, handleVoiceInteraction } = require('./voiceAssistant/voiceAssistant');
+const { buildAttendanceAnalyticsEmbed } = require('./adminAnalytics');
+const { getAttendanceAnalytics } = require('../database/db');
 const fs = require('fs');
 const path = require('path');
 
@@ -350,6 +352,10 @@ function buildCommands() {
                         { name: 'Medium', value: 'Medium' }
                     )
             ),
+        new SlashCommandBuilder()
+            .setName('attendance-analytics')
+            .setDescription('Show Common Hall attendance analytics (admin only).')
+            .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
         ...getVoiceSlashCommands()
     ].map(cmd => cmd.toJSON());
 }
@@ -460,6 +466,17 @@ function handleSlashCommands(client) {
         await interaction.deferReply({ ephemeral: false }).catch(e => console.error('Deferral error:', e));
 
         const { commandName } = interaction;
+
+        if (commandName === 'attendance-analytics') {
+            if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+                return interaction.editReply({ content: '❌ Administrator permission is required.' });
+            }
+            const analytics = await getAttendanceAnalytics();
+            if (!analytics) {
+                return interaction.editReply({ content: '❌ Attendance analytics are currently unavailable.' });
+            }
+            return interaction.editReply({ embeds: [buildAttendanceAnalyticsEmbed(analytics)] });
+        }
         
         // Check if user is a basher
         const userId = interaction.user.id;
@@ -627,4 +644,3 @@ function handleSlashCommands(client) {
 }
 
 module.exports = { handleSlashCommands };
-

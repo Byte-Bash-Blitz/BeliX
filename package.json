@@ -7,17 +7,23 @@
     "start": "node index.js",
     "build": "node index.js",
     "backfill:member-discord-ids": "node scripts/backfillMemberDiscordIds.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test:voice": "node tests/testVoiceAssistant.js",
+    "test": "node tests/testVoiceAssistant.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@discordjs/voice": "^0.19.2",
     "@supabase/supabase-js": "^2.93.3",
     "chrono-node": "^2.7.7",
     "discord.js": "^14.25.1",
     "dotenv": "^17.2.3",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "ffmpeg-static": "^5.3.0",
+    "google-tts-api": "^2.0.2",
+    "groq-sdk": "^1.6.0",
+    "opusscript": "^0.0.8"
   }
 }

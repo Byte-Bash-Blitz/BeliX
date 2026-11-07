@@ -47,6 +47,7 @@ module.exports = {
     getVoiceSlashCommands,
     handleVoiceInteraction,
     groqVoice,
-    speechGenerator
+    speechGenerator,
+    memberKnowledgeEngine: require('./memberKnowledgeEngine')
 };
 

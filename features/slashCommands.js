@@ -59,7 +59,8 @@ function buildHelpEmbed() {
             { name: '/belix-unmute', value: 'Unmute voice responses.' },
             { name: '/belix-voice-status', value: 'Show active voice session status & ping.' },
             { name: '/belix-clear-context', value: 'Clear meeting conversation context.' },
-            { name: '/belix-test', value: 'Test Groq AI and voice functionality.' }
+            { name: '/belix-test', value: 'Test Groq AI and voice functionality.' },
+            { name: '/belix-member [user] [name] [mode]', value: 'Mention a clan member or type their name for Tanglish description.' }
         )
         .setTimestamp();
 }

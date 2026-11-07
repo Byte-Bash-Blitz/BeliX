@@ -10,6 +10,12 @@ const { EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 const { voiceSessionManager } = require('./voiceSessionManager');
 const { groqVoice } = require('./groqVoice');
 const { speechGenerator } = require('./speechGenerator');
+const {
+    isMemberInquiry,
+    extractMemberQuery,
+    detectStyleMode,
+    generateMemberTanglishDescription
+} = require('./memberKnowledgeEngine');
 
 /**
  * Checks if the message content matches a join intent.
@@ -225,6 +231,122 @@ function setupMentionHandler(client) {
         const thinkingMsg = await message.reply('🎙️ *Thinking... generating voice response for your meeting!*');
 
         try {
+            // Feature 19: Check if message is inquiring about a Belmonts clan member
+            // Supports typing the name (e.g. "who is Michael") OR directly mentioning the member (e.g. "@BeliX @Michael", "@BeliX @Michael pathi sollu")
+            const otherUserMentioned = message.mentions.users.find(u => u.id !== client.user.id);
+            const isMemberQuery = isMemberInquiry(cleanText) || Boolean(otherUserMentioned);
+
+            if (isMemberQuery) {
+                let memberQuery = extractMemberQuery(cleanText);
+                if (!memberQuery && otherUserMentioned) {
+                    memberQuery = otherUserMentioned.id;
+                }
+                const { mode, isMoreDetails } = detectStyleMode(cleanText);
+                let memberResult = await generateMemberTanglishDescription(memberQuery, mode, isMoreDetails);
+
+                // If not found by Discord ID, fallback to display name or username
+                if ((!memberResult || !memberResult.member) && otherUserMentioned) {
+                    const guildMember = message.guild?.members.cache.get(otherUserMentioned.id) ||
+                        await message.guild?.members.fetch(otherUserMentioned.id).catch(() => null);
+                    const nameFallback = guildMember?.displayName || otherUserMentioned.globalName || otherUserMentioned.username;
+                    if (nameFallback) {
+                        const fallbackResult = await generateMemberTanglishDescription(nameFallback, mode, isMoreDetails);
+                        if (fallbackResult?.member) {
+                            memberResult = fallbackResult;
+                        }
+                    }
+                }
+
+                const replyText = memberResult.text;
+                const member = memberResult.member;
+
+                if (session && !session.isMuted) {
+                    if (session.audioPlayer.isSpeaking()) {
+                        session.audioPlayer.stop();
+                    }
+
+                    // Convert Tanglish answer into natural voice audio
+                    const { buffer } = await speechGenerator.generateSpeech(replyText);
+
+                    // Speak the answer in the Discord voice channel
+                    session.audioPlayer.enqueue(buffer, {
+                        speakerName,
+                        question: cleanText,
+                        reply: replyText
+                    });
+
+                    // Record into meeting memory
+                    session.conversation.addTurn(message.author.id, speakerName, cleanText, replyText);
+                    session.questionsAnswered++;
+
+                    const embed = new EmbedBuilder()
+                        .setColor('#e67e22')
+                        .setTitle(`🛡️ Belmonts Clan Member: ${member ? member.fullName : (memberQuery || cleanText)}`)
+                        .setDescription(`**"${cleanText}"**\n\n🎙️ **BeliX (Speaking in #${session.voiceChannel.name}):**\n${replyText}`)
+                        .addFields(
+                            { name: '🎭 Mode', value: `\`${memberResult.mode}\``, inline: true },
+                            { name: '🔰 Designation', value: member?.clanDesignation || 'Belmonts Member', inline: true }
+                        );
+
+                    if (member?.aliases && member.aliases.length > 0) {
+                        embed.addFields({ name: '🏷️ Aliases / Nicknames', value: member.aliases.join(', '), inline: false });
+                    }
+
+                    if (member?.liveStats?.points !== undefined) {
+                        embed.setFooter({ text: `Belmonts Points: ${member.liveStats.points} • Solved: ${member.liveStats.problemsSolved || 0} • Feature 19 Natural Tanglish` });
+                    } else {
+                        embed.setFooter({ text: 'BeliX Belmonts Clan Knowledge Engine • Feature 19' });
+                    }
+                    embed.setTimestamp();
+
+                    return await thinkingMsg.edit({ content: null, embeds: [embed] });
+                } else if (session && session.isMuted) {
+                    const embed = new EmbedBuilder()
+                        .setColor('#e67e22')
+                        .setTitle(`🛡️ Belmonts Clan Member: ${member ? member.fullName : (memberQuery || cleanText)}`)
+                        .setDescription(`**"${cleanText}"**\n\n💬 **BeliX:**\n${replyText}\n\n*(Note: Voice output is currently muted. Mention \`@BeliX unmute\` to enable voice speech)*`)
+                        .addFields(
+                            { name: '🎭 Mode', value: `\`${memberResult.mode}\``, inline: true },
+                            { name: '🔰 Designation', value: member?.clanDesignation || 'Belmonts Member', inline: true }
+                        );
+
+                    if (member?.aliases && member.aliases.length > 0) {
+                        embed.addFields({ name: '🏷️ Aliases / Nicknames', value: member.aliases.join(', '), inline: false });
+                    }
+
+                    if (member?.liveStats?.points !== undefined) {
+                        embed.setFooter({ text: `Belmonts Points: ${member.liveStats.points} • Solved: ${member.liveStats.problemsSolved || 0} • Feature 19 Natural Tanglish` });
+                    } else {
+                        embed.setFooter({ text: 'BeliX Belmonts Clan Knowledge Engine • Feature 19' });
+                    }
+                    embed.setTimestamp();
+
+                    return await thinkingMsg.edit({ content: null, embeds: [embed] });
+                } else {
+                    const embed = new EmbedBuilder()
+                        .setColor('#e67e22')
+                        .setTitle(`🛡️ Belmonts Clan Member: ${member ? member.fullName : (memberQuery || cleanText)}`)
+                        .setDescription(`**"${cleanText}"**\n\n💬 **BeliX:**\n${replyText}\n\n💡 *Tip: Join a voice channel and mention \`@BeliX join\` to hear me speak my answers aloud in voice!*`)
+                        .addFields(
+                            { name: '🎭 Mode', value: `\`${memberResult.mode}\``, inline: true },
+                            { name: '🔰 Designation', value: member?.clanDesignation || 'Belmonts Member', inline: true }
+                        );
+
+                    if (member?.aliases && member.aliases.length > 0) {
+                        embed.addFields({ name: '🏷️ Aliases / Nicknames', value: member.aliases.join(', '), inline: false });
+                    }
+
+                    if (member?.liveStats?.points !== undefined) {
+                        embed.setFooter({ text: `Belmonts Points: ${member.liveStats.points} • Solved: ${member.liveStats.problemsSolved || 0} • Feature 19 Natural Tanglish` });
+                    } else {
+                        embed.setFooter({ text: 'BeliX Belmonts Clan Knowledge Engine • Feature 19' });
+                    }
+                    embed.setTimestamp();
+
+                    return await thinkingMsg.edit({ content: null, embeds: [embed] });
+                }
+            }
+
             const history = session ? session.conversation.getHistoryForPrompt() : '';
             const replyText = await groqVoice.answerQuestion(cleanText, speakerName, history);
 

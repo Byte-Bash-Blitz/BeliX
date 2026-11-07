@@ -198,6 +198,23 @@ CRITICAL: Speak directly. Do NOT use markdown symbols, asterisks, bullet points,
             return `Unga question "${question}" vandhuchu, aana GROQ_API_KEY bot config-la illai. Please add pannunga.`;
         }
 
+        // Feature 19: Check if question is asking about a Belmonts clan member
+        try {
+            const { isMemberInquiry, extractMemberQuery, detectStyleMode, generateMemberTanglishDescription } = require('./memberKnowledgeEngine');
+            if (isMemberInquiry(question)) {
+                const memberQuery = extractMemberQuery(question);
+                if (memberQuery) {
+                    const { mode, isMoreDetails } = detectStyleMode(question);
+                    const memberResult = await generateMemberTanglishDescription(memberQuery, mode, isMoreDetails);
+                    if (memberResult && memberResult.text) {
+                        return memberResult.text;
+                    }
+                }
+            }
+        } catch (memberErr) {
+            console.warn('Member inquiry check error in answerQuestion:', memberErr.message);
+        }
+
         const prompt = `Meeting Context:
 Participant: "${speakerName}" has called you and asked this question:
 "${question}"

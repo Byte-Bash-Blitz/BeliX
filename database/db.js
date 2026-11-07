@@ -1170,6 +1170,152 @@ async function getMeetingStats() {
     }
 }
 
+// ============ Member Knowledge Operations (Feature 19) ============
+
+const fs = require('fs');
+const path = require('path');
+
+function loadMemberProfiles() {
+    try {
+        const filePath = path.join(__dirname, 'memberProfiles.json');
+        if (fs.existsSync(filePath)) {
+            const raw = fs.readFileSync(filePath, 'utf8');
+            return JSON.parse(raw);
+        }
+    } catch (e) {
+        console.warn('Could not read memberProfiles.json:', e.message);
+    }
+    return [];
+}
+
+/**
+ * Dynamically queries member knowledge from database (JSON store + Supabase live enrichment).
+ *
+ * @param {string|number} query Name, alias/nickname, discord_username, or member_id
+ * @returns {Promise<Object|null>}
+ */
+async function getMemberKnowledge(query) {
+    if (!query) return null;
+    const profiles = loadMemberProfiles();
+    const q = String(query).toLowerCase().trim();
+
+    // Check if query is a Discord mention (<@123456789> / <@!123456789>) or snowflake ID
+    const mentionMatch = q.match(/<@!?([0-9]{15,22})>/);
+    const discordId = mentionMatch ? mentionMatch[1] : (q.match(/^[0-9]{15,22}$/) ? q : null);
+
+    // 1. Search in memberProfiles.json
+    let match = null;
+    if (discordId) {
+        match = profiles.find(p => p.discordId && String(p.discordId) === String(discordId));
+    }
+
+    if (!match) {
+        match = profiles.find(p => {
+            if (p.memberId && String(p.memberId) === q) return true;
+            if (p.discordId && String(p.discordId) === q) return true;
+            if (p.discordUsername && p.discordUsername.toLowerCase() === q) return true;
+            if (p.fullName && p.fullName.toLowerCase() === q) return true;
+            if (p.aliases && p.aliases.some(a => a.toLowerCase() === q)) return true;
+            // Word boundary or inclusion match
+            if (p.fullName && (p.fullName.toLowerCase().includes(q) || q.includes(p.fullName.toLowerCase()))) return true;
+            if (p.aliases && p.aliases.some(a => a.toLowerCase().includes(q) || q.includes(a.toLowerCase()))) return true;
+            return false;
+        });
+    }
+
+    // 2. Query Supabase for live data enrichment
+    let liveMember = null;
+    if (dbAvailable) {
+        try {
+            if (discordId) {
+                const { data: byDiscordId } = await supabase
+                    .from('members')
+                    .select('*')
+                    .eq('members_discord_id', discordId)
+                    .single();
+                if (byDiscordId) liveMember = byDiscordId;
+            }
+            if (!liveMember && match?.memberId) {
+                const { data } = await supabase
+                    .from('members')
+                    .select('*')
+                    .eq('member_id', match.memberId)
+                    .single();
+                liveMember = data;
+            }
+            if (!liveMember && match?.discordId) {
+                const { data: byMatchDiscordId } = await supabase
+                    .from('members')
+                    .select('*')
+                    .eq('members_discord_id', match.discordId)
+                    .single();
+                if (byMatchDiscordId) liveMember = byMatchDiscordId;
+            }
+            if (!liveMember) {
+                const { data: byName } = await supabase.from('members').select('*').ilike('name', `%${q}%`).limit(1);
+                if (byName && byName.length > 0) liveMember = byName[0];
+            }
+            if (!liveMember) {
+                const { data: byDisplay } = await supabase.from('members').select('*').ilike('display_name', `%${q}%`).limit(1);
+                if (byDisplay && byDisplay.length > 0) liveMember = byDisplay[0];
+            }
+            if (!liveMember) {
+                const { data: byDiscord } = await supabase.from('members').select('*').ilike('discord_username', `%${q}%`).limit(1);
+                if (byDiscord && byDiscord.length > 0) liveMember = byDiscord[0];
+            }
+        } catch (err) {
+            console.warn('Error fetching live member for knowledge:', err.message);
+        }
+    }
+
+    // If no match in profiles, but found in Supabase, build profile dynamically
+    if (!match && liveMember) {
+        match = profiles.find(p => p.memberId === liveMember.member_id) || {
+            memberId: liveMember.member_id,
+            fullName: liveMember.name || liveMember.display_name || liveMember.discord_username,
+            aliases: [liveMember.display_name, liveMember.discord_username].filter(Boolean),
+            clanDesignation: liveMember.role || 'Belmonts Member',
+            team: liveMember.domain || 'Belmonts Clan',
+            professionalDescription: liveMember.testimony || `${liveMember.role || 'Belmonts'} team member`,
+            responsibilities: 'Participating in clan technical projects and daily gatherings.',
+            funnyPersonality: null,
+            achievements: liveMember.belmonts_points ? `${liveMember.belmonts_points} points earned` : null
+        };
+    }
+
+    if (!match) return null;
+
+    // Merge live data with knowledge record
+    return {
+        memberId: match.memberId,
+        fullName: match.fullName,
+        aliases: match.aliases || [],
+        clanDesignation: match.clanDesignation || liveMember?.role || 'Belmonts Member',
+        team: match.team || liveMember?.domain || 'Belmonts Clan',
+        professionalDescription: match.professionalDescription || liveMember?.testimony || '',
+        responsibilities: match.responsibilities || '',
+        funnyPersonality: match.funnyPersonality || null,
+        achievements: match.achievements || (liveMember?.belmonts_points ? `${liveMember.belmonts_points} points earned` : ''),
+        // Enriched live stats from Supabase
+        liveStats: liveMember ? {
+            points: liveMember.belmonts_points || 0,
+            problemsSolved: liveMember.problem_solved || 0,
+            batch: liveMember.batch || '',
+            gpa: liveMember.gpa || null,
+            testimony: liveMember.testimony || '',
+            github: liveMember.github_username || null,
+            leetcode: liveMember.leetcode_username || null,
+            linkedin: liveMember.linkedin_url || null,
+            portfolio: liveMember.portfolio_url || null,
+            discordUsername: liveMember.discord_username || ''
+        } : null
+    };
+}
+
+function getAllMemberKnowledge() {
+    return loadMemberProfiles();
+}
+
 module.exports = {
     syncMember,
     getMember,
@@ -1208,4 +1354,7 @@ module.exports = {
     updateGatheringTime,
     getGatheringStatus,
     getGatheringHistory,
+    // Member Knowledge functions (Feature 19)
+    getMemberKnowledge,
+    getAllMemberKnowledge,
 };

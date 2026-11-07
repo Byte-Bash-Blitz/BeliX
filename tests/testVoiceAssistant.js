@@ -26,6 +26,13 @@ const {
     isMuteIntent,
     isUnmuteIntent
 } = require('../features/voiceAssistant/mentionHandler');
+const {
+    isMemberInquiry,
+    extractMemberQuery,
+    detectStyleMode,
+    generateMemberTanglishDescription
+} = require('../features/voiceAssistant/memberKnowledgeEngine');
+const { getMemberKnowledge, getAllMemberKnowledge } = require('../database/db');
 
 let passedTests = 0;
 let totalTests = 0;
@@ -251,9 +258,9 @@ async function runAllTests() {
 
     // Section 7: Voice Slash Commands
     console.log('\n--- 7. Voice Slash Commands Registration Tests ---');
-    runTest('Provides all 8 required /belix-* slash commands', () => {
+    runTest('Provides all 9 required /belix-* slash commands', () => {
         const commands = getVoiceSlashCommands();
-        assert.strictEqual(commands.length, 8);
+        assert.strictEqual(commands.length, 9);
         const names = commands.map(c => c.name);
         const expected = [
             'belix-join',
@@ -263,7 +270,8 @@ async function runAllTests() {
             'belix-unmute',
             'belix-voice-status',
             'belix-clear-context',
-            'belix-test'
+            'belix-test',
+            'belix-member'
         ];
         for (const exp of expected) {
             assert(names.includes(exp), `Missing expected command: ${exp}`);
@@ -295,6 +303,110 @@ async function runAllTests() {
         assert.strictEqual(isMuteIntent('mute'), true);
         assert.strictEqual(isMuteIntent('be quiet'), true);
         assert.strictEqual(isUnmuteIntent('unmute'), true);
+    });
+
+    // Section 9: Feature 19 Natural Tanglish Member Description Engine Tests
+    console.log('\n--- 9. Feature 19 Natural Tanglish Member Description Engine Tests ---');
+    runTest('getAllMemberKnowledge: loads all 20 Belmonts clan member profiles', () => {
+        const members = getAllMemberKnowledge();
+        assert(Array.isArray(members));
+        assert.strictEqual(members.length, 20);
+    });
+
+    await runAsyncTest('getMemberKnowledge: dynamically resolves members by name, nickname, or alias', async () => {
+        const m1 = await getMemberKnowledge('Michael Nithesh');
+        assert(m1 !== null);
+        assert.strictEqual(m1.fullName, 'Michael Nithesh');
+        assert.strictEqual(m1.clanDesignation, 'Moderator & AI Lead');
+
+        const m2 = await getMemberKnowledge('Haaseera Mujilika');
+        assert(m2 !== null);
+        assert.strictEqual(m2.fullName, 'Haajira Muflika');
+
+        const m3 = await getMemberKnowledge('Samuvel');
+        assert(m3 !== null);
+        assert.strictEqual(m3.fullName, 'Samuvel Morish');
+
+        const m4 = await getMemberKnowledge('Dharshan');
+        assert(m4 !== null);
+        assert.strictEqual(m4.fullName, 'Dharshan');
+    });
+
+    runTest('isMemberInquiry: accurately detects member questions in English, Tanglish, and Discord mentions', () => {
+        assert.strictEqual(isMemberInquiry('who is Michael Nithesh?'), true);
+        assert.strictEqual(isMemberInquiry('tell me about Samuvel Morish'), true);
+        assert.strictEqual(isMemberInquiry('Haaseera Mujilika yaaru?'), true);
+        assert.strictEqual(isMemberInquiry('Dharshan pathi sollu'), true);
+        assert.strictEqual(isMemberInquiry('Ancy pathi explain pannu'), true);
+        // Direct Discord mentions without typing the name:
+        assert.strictEqual(isMemberInquiry('<@1167152655890645000>'), true);
+        assert.strictEqual(isMemberInquiry('who is <@1351241536570130400>?'), true);
+        assert.strictEqual(isMemberInquiry('<@1337415058061529000> pathi sollu'), true);
+        assert.strictEqual(isMemberInquiry('funny-ah <@1464653401727046000> pathi sollu'), true);
+        assert.strictEqual(isMemberInquiry('what is a REST API?'), false);
+        assert.strictEqual(isMemberInquiry('join voice'), false);
+    });
+
+    runTest('extractMemberQuery: extracts target member name, alias, or Discord mention ID cleanly', () => {
+        assert.strictEqual(extractMemberQuery('who is Michael Nithesh?'), 'Michael Nithesh');
+        assert.strictEqual(extractMemberQuery('Samuvel Morish yaaru?'), 'Samuvel Morish');
+        assert.strictEqual(extractMemberQuery('Dharshan pathi sollu'), 'Dharshan');
+        // Discord mentions extraction:
+        assert.strictEqual(extractMemberQuery('<@1167152655890645000>'), '1167152655890645000');
+        assert.strictEqual(extractMemberQuery('who is <@1351241536570130400>?'), '1351241536570130400');
+        assert.strictEqual(extractMemberQuery('<@1337415058061529000> pathi sollu'), '1337415058061529000');
+    });
+
+    await runAsyncTest('getMemberKnowledge: resolves members directly by Discord mention tag or ID', async () => {
+        const m1 = await getMemberKnowledge('<@1167152655890645000>');
+        assert(m1 !== null);
+        assert.strictEqual(m1.fullName, 'Michael Nithesh');
+
+        const m2 = await getMemberKnowledge('<@!1351241536570130400>');
+        assert(m2 !== null);
+        assert.strictEqual(m2.fullName, 'Ancy');
+
+        const m3 = await getMemberKnowledge('<@1464653401727046000>');
+        assert(m3 !== null);
+        assert.strictEqual(m3.fullName, 'Dharshan');
+
+        const m4 = await getMemberKnowledge('1337415058061529000');
+        assert(m4 !== null);
+        assert.strictEqual(m4.fullName, 'Samuvel Morish');
+    });
+
+    runTest('detectStyleMode: accurately detects funny, professional, and combined modes', () => {
+        const m1 = detectStyleMode('funny-ah Ancy pathi sollu');
+        assert.strictEqual(m1.mode, 'funny');
+
+        const m2 = detectStyleMode('professional career details about Michael Nithesh');
+        assert.strictEqual(m2.mode, 'professional');
+
+        const m3 = detectStyleMode('who is Samuvel Morish?');
+        assert.strictEqual(m3.mode, 'combined');
+
+        const m4 = detectStyleMode('tell me more details about Dharshan');
+        assert.strictEqual(m4.isMoreDetails, true);
+    });
+
+    await runAsyncTest('generateMemberTanglishDescription: dynamically generates 3-4 line conversational Tanglish', async () => {
+        const result = await generateMemberTanglishDescription('Michael Nithesh', 'combined', false);
+        assert(result && result.text && result.text.length > 30);
+        assert(result.member !== null);
+        assert.strictEqual(result.member.fullName, 'Michael Nithesh');
+        // Must contain NO markdown symbols
+        assert(!result.text.includes('**'));
+        assert(!result.text.includes('###'));
+        assert(!result.text.includes('```'));
+        console.log(`    Michael Nithesh Tanglish Output:\n    "${result.text}"`);
+    });
+
+    await runAsyncTest('groqVoice.answerQuestion: automatically detects member inquiry and replies in Tanglish', async () => {
+        const answer = await groqVoice.answerQuestion('Samuvel pathi sollu', 'Dharshan', '');
+        assert(answer && answer.length > 30);
+        assert(!answer.includes('**'));
+        assert(!answer.includes('```'));
+        console.log(`    Voice Answer:\n    "${answer.slice(0, 100)}..."`);
     });
 
     console.log('\n========================================');

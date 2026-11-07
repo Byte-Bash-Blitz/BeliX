@@ -9,6 +9,7 @@ const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('disc
 const { voiceSessionManager } = require('./voiceSessionManager');
 const { groqVoice } = require('./groqVoice');
 const { speechGenerator } = require('./speechGenerator');
+const { generateMemberTanglishDescription } = require('./memberKnowledgeEngine');
 
 /**
  * Returns an array of SlashCommandBuilder instances for registration.
@@ -54,7 +55,36 @@ function getVoiceSlashCommands() {
 
         new SlashCommandBuilder()
             .setName('belix-test')
-            .setDescription('Test Groq AI connectivity and voice synthesis functionality.')
+            .setDescription('Test Groq AI connectivity and voice synthesis functionality.'),
+
+        new SlashCommandBuilder()
+            .setName('belix-member')
+            .setDescription('Get a natural Tanglish description of a Belmonts clan member.')
+            .addUserOption(option =>
+                option.setName('user')
+                    .setDescription('Mention or select a Belmonts clan member directly')
+                    .setRequired(false)
+            )
+            .addStringOption(option =>
+                option.setName('name')
+                    .setDescription('Or type name/nickname (e.g. Michael Nithesh, Ancy, Samuvel, Zarif)')
+                    .setRequired(false)
+            )
+            .addStringOption(option =>
+                option.setName('mode')
+                    .setDescription('Description style')
+                    .setRequired(false)
+                    .addChoices(
+                        { name: 'Combined (Professional + Fun)', value: 'combined' },
+                        { name: 'Funny (Humor & Personality)', value: 'funny' },
+                        { name: 'Professional (Role & Achievements)', value: 'professional' }
+                    )
+            )
+            .addBooleanOption(option =>
+                option.setName('tell_me_more')
+                    .setDescription('Provide additional detailed verified clan stats and projects')
+                    .setRequired(false)
+            )
     ];
 }
 
@@ -320,6 +350,73 @@ async function handleVoiceInteraction(interaction) {
                     .setTimestamp();
 
                 return interaction.editReply({ embeds: [resultEmbed] });
+            }
+
+            case 'belix-member': {
+                const targetUser = interaction.options.getUser('user');
+                const nameOption = interaction.options.getString('name');
+                const mode = interaction.options.getString('mode') || 'combined';
+                const tellMeMore = interaction.options.getBoolean('tell_me_more') || false;
+
+                if (!targetUser && !nameOption) {
+                    return interaction.editReply({
+                        content: '⚠️ Please mention or select a clan member using `user:` (e.g. `/belix-member user:@Michael`) or type their name using `name:` (e.g. `/belix-member name:Ancy`).'
+                    });
+                }
+
+                const query = targetUser ? targetUser.id : nameOption;
+                let result = await generateMemberTanglishDescription(query, mode, tellMeMore);
+
+                // If not found by Discord ID, fallback to display name or username
+                if (targetUser && (!result || !result.member)) {
+                    const guildMember = interaction.guild?.members.cache.get(targetUser.id);
+                    const nameFallback = guildMember?.displayName || targetUser.globalName || targetUser.username;
+                    if (nameFallback) {
+                        const fallbackResult = await generateMemberTanglishDescription(nameFallback, mode, tellMeMore);
+                        if (fallbackResult?.member) {
+                            result = fallbackResult;
+                        }
+                    }
+                }
+
+                const displayName = result.member ? result.member.fullName : (targetUser ? `<@${targetUser.id}>` : nameOption);
+
+                const embed = new EmbedBuilder()
+                    .setColor('#e67e22')
+                    .setTitle(`🛡️ Belmonts Clan Member: ${result.member ? result.member.fullName : displayName}`)
+                    .setDescription(result.text)
+                    .addFields(
+                        { name: '🎭 Mode', value: `\`${result.mode}\``, inline: true },
+                        { name: '🔰 Designation', value: result.member?.clanDesignation || 'Belmonts Member', inline: true }
+                    );
+
+                if (result.member?.aliases && result.member.aliases.length > 0) {
+                    embed.addFields({ name: '🏷️ Aliases / Nicknames', value: result.member.aliases.join(', '), inline: false });
+                }
+
+                if (result.member?.liveStats?.points !== undefined) {
+                    embed.setFooter({ text: `Belmonts Points: ${result.member.liveStats.points} • Solved: ${result.member.liveStats.problemsSolved || 0} • Feature 19 Natural Tanglish` });
+                } else {
+                    embed.setFooter({ text: 'BeliX Belmonts Clan Knowledge Engine • Feature 19' });
+                }
+                embed.setTimestamp();
+
+                // If currently connected to a voice channel in this server, speak the description in voice!
+                const session = voiceSessionManager.getSession(guild.id);
+                if (session && !session.isMuted) {
+                    try {
+                        const { buffer } = await speechGenerator.generateSpeech(result.text);
+                        session.audioPlayer.enqueue(buffer, {
+                            speakerName: interaction.member?.displayName || interaction.user.username,
+                            question: `Member query: ${displayName}`,
+                            reply: result.text
+                        });
+                    } catch (speechErr) {
+                        console.warn('Voice playback for /belix-member failed:', speechErr.message);
+                    }
+                }
+
+                return interaction.editReply({ embeds: [embed] });
             }
 
             default:

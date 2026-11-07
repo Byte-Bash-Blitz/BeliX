@@ -11,6 +11,7 @@ A comprehensive Discord bot designed to enhance community engagement with automa
 
 ### 🎮 Gamification
 - **Points System** - Members earn points through interactions and achievements
+- **45-Minute Common Hall Attendance** - Daily gatherings track multiple voice sessions; 45 total minutes earns PRESENT status and 10 points once per meeting
 - **Leaderboard** - Real-time leaderboard showing top 10 performers with pagination
 - **Personal Statistics** - Check your personal points and last activity with `/mypoints`
 
@@ -30,6 +31,29 @@ A comprehensive Discord bot designed to enhance community engagement with automa
 - **Database Management** - Integrated SQLite database for data persistence
 - **Slash Commands** - Modern Discord slash commands for all functionality
 - **Permission Control** - Role-based access control for commands
+- **Attendance Analytics** - Administrators can use `/attendance-analytics` for meeting, status, duration, and history metrics
+
+### 🗄️ Attendance Database Setup
+
+Apply [`database/attendance_45_minute_migration.sql`](database/attendance_45_minute_migration.sql) in the Supabase SQL editor before enabling attendance tracking. The migration is additive and preserves existing attendance records.
+
+### 🖥️ BeliX Management Dashboard
+
+The existing Express server serves the management dashboard at:
+
+```text
+http://127.0.0.1:3000/
+```
+
+It uses live Discord.js, Supabase, bot health, gathering, member, command, and attendance data. The dashboard does not invent unsupported controls: moderation actions, command toggles, AI deployment settings, and process restarts remain read-only until their backend capabilities are implemented.
+
+To enable authenticated dashboard administration endpoints, add a private token to `.env`:
+
+```env
+DASHBOARD_ADMIN_TOKEN=use-a-long-random-value
+```
+
+The token is accepted only through the `x-dashboard-token` request header and is never returned by the API or sent to the browser.
 
 ---
 

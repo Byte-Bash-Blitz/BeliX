@@ -879,24 +879,148 @@ async function updateMeetingEnd(meetingId, endData) {
 async function recordAttendance(meetingId, attendanceData) {
     if (!dbAvailable) return null;
     try {
-        // Ensure meetingId is included in the attendance data
         const dataToInsert = Array.isArray(attendanceData) 
             ? attendanceData.map(d => ({ ...d, meeting_id: meetingId }))
             : [{ ...attendanceData, meeting_id: meetingId }];
+        const results = [];
+        for (const attendance of dataToInsert) {
+            const { data: existing, error: lookupError } = await supabase
+                .from('meeting_attendance')
+                .select('*')
+                .eq('meeting_id', attendance.meeting_id)
+                .eq('member_id', attendance.member_id)
+                .limit(1)
+                .maybeSingle();
+            if (lookupError) throw lookupError;
 
-        const { data, error } = await supabase
-            .from('meeting_attendance')
-            .insert(dataToInsert)
-            .select();
-
-        if (error) {
-            console.error('Error recording attendance:', error);
-            return null;
+            const query = existing
+                ? supabase.from('meeting_attendance').update(attendance)
+                    .eq('meeting_id', attendance.meeting_id)
+                    .eq('member_id', attendance.member_id)
+                : supabase.from('meeting_attendance').insert(attendance);
+            const { data, error } = await query.select().single();
+            if (error) throw error;
+            results.push(data);
         }
-
-        return data || null;
+        return results;
     } catch (error) {
         console.error('Error recording attendance:', error);
+        return null;
+    }
+}
+
+async function recordVoiceSession(sessionData) {
+    if (!dbAvailable) return null;
+    try {
+        const { data, error } = await supabase
+            .from('meeting_voice_sessions')
+            .upsert(sessionData, { onConflict: 'meeting_id,member_id,joined_at' })
+            .select()
+            .single();
+        if (error) throw error;
+        return data;
+    } catch (error) {
+        console.error('Error recording voice session:', error);
+        return null;
+    }
+}
+
+async function getMeetingVoiceSessions(meetingId) {
+    if (!dbAvailable) return [];
+    try {
+        const { data, error } = await supabase
+            .from('meeting_voice_sessions')
+            .select('*')
+            .eq('meeting_id', meetingId)
+            .order('joined_at', { ascending: true });
+        if (error) throw error;
+        return data || [];
+    } catch (error) {
+        console.error('Error getting voice sessions:', error);
+        return [];
+    }
+}
+
+async function awardMeetingPoints(meetingId, memberId, pointsToAdd = 10) {
+    if (!dbAvailable) return false;
+    try {
+        const { data, error } = await supabase
+            .from('meeting_point_awards')
+            .insert({ meeting_id: meetingId, member_id: memberId, points: pointsToAdd })
+            .select()
+            .single();
+        if (error) {
+            if (error.code === '23505') return false;
+            throw error;
+        }
+        if (data && await addPoints(memberId, pointsToAdd) === null) {
+            await supabase
+                .from('meeting_point_awards')
+                .delete()
+                .eq('meeting_id', meetingId)
+                .eq('member_id', memberId);
+            console.error(`Meeting point award recorded but points update failed for member ${memberId}`);
+            return false;
+        }
+        return Boolean(data);
+    } catch (error) {
+        console.error('Error awarding meeting points:', error);
+        return false;
+    }
+}
+
+async function getAttendanceAnalytics(limit = 30) {
+    if (!dbAvailable) return null;
+    try {
+        const { data: meetings, error: meetingsError } = await supabase
+            .from('meetings')
+            .select('meeting_id, meeting_date, meeting_time, start_time, end_time')
+            .order('meeting_date', { ascending: false })
+            .limit(limit);
+        if (meetingsError) throw meetingsError;
+
+        const meetingIds = (meetings || []).map(meeting => meeting.meeting_id);
+        if (meetingIds.length === 0) {
+            return { totalMeetings: 0, totalUniqueAttendees: 0, presentMembers: 0, shortDurationMembers: 0, totalVoiceMinutes: 0, averageAttendanceMinutes: 0, history: [] };
+        }
+
+        const { data: attendance, error: attendanceError } = await supabase
+            .from('meeting_attendance')
+            .select('meeting_id, member_id, display_name, total_duration_minutes, attendance_status')
+            .in('meeting_id', meetingIds);
+        if (attendanceError) throw attendanceError;
+
+        const rows = attendance || [];
+        const totalVoiceMinutes = rows.reduce((total, row) => total + Number(row.total_duration_minutes || 0), 0);
+        return {
+            totalMeetings: meetings.length,
+            totalUniqueAttendees: new Set(rows.map(row => row.member_id)).size,
+            presentMembers: rows.filter(row => row.attendance_status === 'PRESENT').length,
+            shortDurationMembers: rows.filter(row => row.attendance_status === 'SHORT DURATION').length,
+            totalVoiceMinutes,
+            averageAttendanceMinutes: rows.length ? Math.round(totalVoiceMinutes / rows.length) : 0,
+            history: meetings.map(meeting => ({ ...meeting, attendance: rows.filter(row => row.meeting_id === meeting.meeting_id) })),
+        };
+    } catch (error) {
+        console.error('Error getting attendance analytics:', error);
+        return null;
+    }
+}
+
+async function getActiveMeeting() {
+    if (!dbAvailable) return null;
+    try {
+        const { data, error } = await supabase
+            .from('meetings')
+            .select('*')
+            .is('end_time', null)
+            .order('start_time', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+        if (error) throw error;
+        return data || null;
+    } catch (error) {
+        console.error('Error getting active meeting:', error);
         return null;
     }
 }
@@ -1345,6 +1469,11 @@ module.exports = {
     createMeeting,
     updateMeetingEnd,
     recordAttendance,
+    recordVoiceSession,
+    getMeetingVoiceSessions,
+    awardMeetingPoints,
+    getAttendanceAnalytics,
+    getActiveMeeting,
     getMeetingAttendance,
     getMeetings,
     getMeetingStats,

@@ -2,6 +2,7 @@ const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, ActionRowBuilder
 const { buildLeaderboardEmbed, getLeaderboardButtons, buildMyPointsEmbed } = require('./leaderboard');
 const { loadTerminologies, postDailyTerminology } = require('./dailyTerminology');
 const { getLeaderboard, getMember, getMemberByUsername, getMemberByDiscordID, getMemberByDiscordUsername, getPoints, initializePoints, syncMember } = require('../database/db');
+const { getVoiceSlashCommands, handleVoiceInteraction } = require('./voiceAssistant/voiceAssistant');
 const fs = require('fs');
 const path = require('path');
 
@@ -49,7 +50,16 @@ function buildHelpEmbed() {
             { name: '/prev', value: 'Preview the previous terminology.' },
             { name: '/dailyquestions', value: 'View today\'s daily programming question.' },
             { name: '/question <number>', value: 'View a specific question (1-129) with full details.' },
-            { name: '/qd <difficulty>', value: 'Filter questions by difficulty level (Easy/Medium).' }
+            { name: '/qd <difficulty>', value: 'Filter questions by difficulty level (Easy/Medium).' },
+            { name: '🎙️ Voice Meeting Assistant', value: '───────────────────────────' },
+            { name: '/belix-join', value: 'Join your current voice channel.' },
+            { name: '/belix-leave', value: 'Disconnect from the voice channel.' },
+            { name: '/belix-mode <mode>', value: 'Change conversation mode (`wake-word` or `active-meeting`).' },
+            { name: '/belix-mute', value: 'Mute voice responses.' },
+            { name: '/belix-unmute', value: 'Unmute voice responses.' },
+            { name: '/belix-voice-status', value: 'Show active voice session status & ping.' },
+            { name: '/belix-clear-context', value: 'Clear meeting conversation context.' },
+            { name: '/belix-test', value: 'Test Groq AI and voice functionality.' }
         )
         .setTimestamp();
 }
@@ -339,7 +349,8 @@ function buildCommands() {
                         { name: 'Easy', value: 'Easy' },
                         { name: 'Medium', value: 'Medium' }
                     )
-            )
+            ),
+        ...getVoiceSlashCommands()
     ].map(cmd => cmd.toJSON());
 }
 
@@ -467,6 +478,10 @@ function handleSlashCommands(client) {
                 return interaction.editReply({ embeds: [buildBasherHelpEmbed()] });
             }
             return interaction.editReply({ embeds: [buildHelpEmbed()] });
+        }
+
+        if (commandName.startsWith('belix-')) {
+            return handleVoiceInteraction(interaction);
         }
 
         if (commandName === 'leaderboard') {

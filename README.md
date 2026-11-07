@@ -54,6 +54,7 @@ A comprehensive Discord bot designed to enhance community engagement with automa
 
 ## 📋 Slash Commands
 
+### General & Gamification Commands
 | Command | Description | Usage |
 |---------|-------------|-------|
 | `/help` | Show all available commands | `/help` |
@@ -63,6 +64,64 @@ A comprehensive Discord bot designed to enhance community engagement with automa
 | `/next` | Preview the next terminology | `/next` |
 | `/prev` | Preview the previous terminology | `/prev` |
 | `/dailyquestions` | Browse 129 programming questions | `/dailyquestions` |
+| `/question <number>` | View a specific question (1-129) | `/question number:1` |
+| `/qd <difficulty>` | Filter questions by difficulty (Easy/Medium) | `/qd difficulty:Easy` |
+
+### 🎙️ AI Voice Meeting Assistant Commands
+| Command | Description | Usage |
+|---------|-------------|-------|
+| `/belix-join` | Connect BeliX to your current voice channel | `/belix-join` |
+| `/belix-leave` | Disconnect BeliX from the voice channel | `/belix-leave` |
+| `/belix-mode` | Set conversation mode (`wake-word` or `active-meeting`) | `/belix-mode mode:wake-word` |
+| `/belix-mute` | Mute BeliX voice output | `/belix-mute` |
+| `/belix-unmute` | Unmute BeliX voice output | `/belix-unmute` |
+| `/belix-voice-status` | View voice session latency, state, and metrics | `/belix-voice-status` |
+| `/belix-clear-context` | Clear meeting conversation memory | `/belix-clear-context` |
+| `/belix-test` | Run diagnostics on Groq AI & voice synthesis | `/belix-test` |
+
+### 💬 Natural Text Mentions (No `/` Slash Command Required!)
+You can also invite and manage BeliX simply by **@mentioning the bot** in any text channel:
+
+| Mention Phrase | Action |
+|---|---|
+| `@BeliX join` / `@BeliX please join` | BeliX joins your current voice channel and introduces itself |
+| `@BeliX leave` / `@BeliX disconnect` / `@BeliX bye` | BeliX leaves the voice channel and ends the session |
+| `@BeliX <your doubt or question>` | BeliX analyzes your question with Groq and **replies by voice** in the meeting voice channel while posting the transcript in chat! |
+| `@BeliX status` | Displays active voice session status, channel, and metrics |
+| `@BeliX mute` | Mutes voice output |
+| `@BeliX unmute` | Unmutes voice output |
+| `@BeliX` | Shows a quick guide on how to invite and speak with BeliX |
+
+---
+
+## 🎙️ AI Voice Meeting Assistant Architecture
+
+BeliX features a real-time, ultra-fast AI voice assistant powered by **Groq** (Llama 3.3 & Whisper):
+
+```
+Participant Speaks
+      ↓ (Discord Voice UDP)
+@discordjs/voice (Opus Stream)
+      ↓
+prism-media (Opus Decoder -> 48kHz Stereo PCM)
+      ↓
+audioProcessor (Resample 3:1 -> 16kHz Mono 16-bit WAV)
+      ↓
+Groq Whisper STT (whisper-large-v3: Speech Recognition)
+      ↓
+Groq Llama 3.3 (llama-3.3-70b-versatile: Technical Reasoning & Context)
+      ↓
+Speech Generator (Natural Voice Audio MP3)
+      ↓
+Audio Player (@discordjs/voice -> Voice Channel Playback)
+```
+
+- **Wake Word Detection:** Responds to `"Hey BeliX"`, `"Hey Blix"`, and `"BeliX"` with clean question extraction and barge-in / interruption handling.
+- **Two Operating Modes:**
+  - `wake-word` (Default): Responds only when explicitly addressed.
+  - `active-meeting`: Actively listens and contributes helpful insights to technical discussions.
+- **Privacy & Security:** All incoming voice streams are processed in-memory for speech understanding. No raw audio is permanently stored on disk.
+- **Ultra-Fast Performance:** Groq LPU inference provides near-instantaneous speech transcription and reasoning.
 
 ---
 
@@ -189,11 +248,31 @@ Tech terminology database with:
 
 ---
 
-## 🔐 Permissions & Security
+## 🔐 Permissions, Intents & Voice Configuration
 
-- Commands use Discord's permission system
-- Role-based access control for admin features
-- Secure database operations with prepared statements
+### Discord Developer Portal Intents
+Enable the following Privileged Gateway Intents under **Bot -> Privileged Gateway Intents**:
+- [x] **Server Members Intent** (for member synchronization and welcoming)
+- [x] **Message Content Intent** (for reading messages and command triggers)
+
+### Voice Permissions Required in Voice Channels
+Ensure BeliX has a role or channel overwrite with:
+- `Connect` (Permission to join the voice channel)
+- `Speak` (Permission to transmit voice audio)
+- `Use Voice Activity` (Detect participant speaking)
+- `View Channel` (See the voice and text channels)
+
+### Environment Configuration (.env)
+```env
+DISCORD_TOKEN=your_discord_bot_token
+GUILD_ID=your_guild_id
+
+# AI Engine: Groq API (Ultra-fast LLM & Whisper STT: https://console.groq.com/keys)
+GROQ_API_KEY=your_groq_api_key
+GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_WHISPER_MODEL=whisper-large-v3
+VOICE_MODE=wake-word
+```
 - Token security via environment variables
 - Rate limiting on API calls
 

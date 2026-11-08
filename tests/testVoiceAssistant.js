@@ -319,7 +319,7 @@ async function runAllTests() {
         assert.strictEqual(m1.fullName, 'Michael Nithesh');
         assert.strictEqual(m1.clanDesignation, 'Moderator & AI Lead');
 
-        const m2 = await getMemberKnowledge('Haaseera Mujilika');
+        const m2 = await getMemberKnowledge('Haajira Mufliha');
         assert(m2 !== null);
         assert.strictEqual(m2.fullName, 'Haajira Muflika');
 
@@ -335,7 +335,7 @@ async function runAllTests() {
     runTest('isMemberInquiry: accurately detects member questions in English, Tanglish, and Discord mentions', () => {
         assert.strictEqual(isMemberInquiry('who is Michael Nithesh?'), true);
         assert.strictEqual(isMemberInquiry('tell me about Samuvel Morish'), true);
-        assert.strictEqual(isMemberInquiry('Haaseera Mujilika yaaru?'), true);
+        assert.strictEqual(isMemberInquiry('Haajira Mufliha yaaru?'), true);
         assert.strictEqual(isMemberInquiry('Dharshan pathi sollu'), true);
         assert.strictEqual(isMemberInquiry('Ancy pathi explain pannu'), true);
         // Direct Discord mentions without typing the name:

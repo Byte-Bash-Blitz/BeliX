@@ -361,34 +361,55 @@ function buildCommands() {
     ].map(cmd => cmd.toJSON());
 }
 
+async function registerCommandsForGuild(guild, commands) {
+    if (!guild) return;
+    try {
+        await guild.commands.set(commands);
+        console.log(`✓ Slash commands registered for guild: ${guild.name} (${guild.id})`);
+        try {
+            const members = await guild.members.fetch({ limit: 0 }).catch(() => null);
+            if (members) {
+                memberCache.set(guild.id, Array.from(members.values()));
+                console.log(`✓ Cached ${members.size} guild members for ${guild.name}`);
+            }
+        } catch (mErr) {
+            console.warn(`Could not cache guild members for ${guild.name}:`, mErr.message);
+        }
+    } catch (err) {
+        console.error(`Failed to register slash commands for guild ${guild.name} (${guild.id}):`, err.message);
+    }
+}
+
 function handleSlashCommands(client) {
     client.once('ready', async () => {
         try {
             const commands = buildCommands();
-            const guildId = process.env.GUILD_ID;
-            if (guildId) {
-                const guild = client.guilds.cache.get(guildId);
-                if (guild) {
-                    await guild.commands.set(commands);
-                    await client.application.commands.set([]);
-                    console.log(`✓ Slash commands registered for guild ${guildId}`);
-                    
-                    // Fetch and cache all guild members once at startup
-                    try {
-                        const members = await guild.members.fetch({ limit: 0 });
-                        memberCache.set(guildId, Array.from(members.values()));
-                        console.log(`✓ Cached ${members.size} guild members`);
-                    } catch (error) {
-                        console.warn('Could not cache guild members:', error.message);
-                    }
-                } else {
-                    await client.application.commands.set(commands);
-                }
-            } else {
+            
+            // 1. Register on all currently connected guilds (instant guild propagation)
+            for (const [guildId, guild] of client.guilds.cache) {
+                await registerCommandsForGuild(guild, commands);
+            }
+
+            // 2. Also register globally so commands are available across Discord
+            try {
                 await client.application.commands.set(commands);
+                console.log('✓ Slash commands registered globally');
+            } catch (gErr) {
+                console.warn('Global slash command registration notice:', gErr.message);
             }
         } catch (error) {
             console.error('Failed to register slash commands:', error);
+        }
+    });
+
+    // 3. Automatically register commands whenever invited to a new server
+    client.on('guildCreate', async (guild) => {
+        try {
+            console.log(`Bot joined new guild: ${guild.name} (${guild.id})`);
+            const commands = buildCommands();
+            await registerCommandsForGuild(guild, commands);
+        } catch (err) {
+            console.error(`Error registering commands on guildCreate for ${guild.name}:`, err.message);
         }
     });
 

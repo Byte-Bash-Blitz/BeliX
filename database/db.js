@@ -22,24 +22,54 @@ if (supabaseUrl && supabaseAnonKey && !supabaseUrl.includes('your-supabase')) {
 
 // ============ Members Operations ============
 
-async function getMemberByDiscordID(discordId) {
+async function getMemberByDiscordID(discordId, username = null, displayName = null) {
     if (!dbAvailable) return null;
     try {
-        const id = parseInt(discordId, 10);
-        if (Number.isNaN(id)) return null;
+        if (!discordId && !username && !displayName) return null;
 
-        const { data: byDiscordId, error: discordIdError } = await supabase
-            .from('members')
-            .select('*')
-            .eq('members_discord_id', id)
-            .single();
+        // 1. Query by members_discord_id directly
+        if (discordId) {
+            const { data: byDiscordId } = await supabase
+                .from('members')
+                .select('*')
+                .eq('members_discord_id', discordId)
+                .maybeSingle();
 
-        if (byDiscordId) {
-            return byDiscordId;
+            if (byDiscordId) {
+                return byDiscordId;
+            }
         }
 
-        if (discordIdError && discordIdError.code !== 'PGRST116') {
-            console.error('Error fetching member by members_discord_id:', discordIdError);
+        // 2. Query by discord_username if provided
+        if (username) {
+            const { data: byUsername } = await supabase
+                .from('members')
+                .select('*')
+                .ilike('discord_username', username)
+                .maybeSingle();
+
+            if (byUsername) {
+                // If discordId is provided, link it dynamically
+                if (discordId && !byUsername.members_discord_id) {
+                    await supabase
+                        .from('members')
+                        .update({ members_discord_id: discordId })
+                        .eq('member_id', byUsername.member_id);
+                }
+                return byUsername;
+            }
+        }
+
+        // 3. Query by display_name or name
+        if (displayName) {
+            const { data: byName } = await supabase
+                .from('members')
+                .select('*')
+                .or(`display_name.ilike.%${displayName}%,name.ilike.%${displayName}%`)
+                .limit(1)
+                .maybeSingle();
+
+            if (byName) return byName;
         }
 
         return null;
@@ -100,10 +130,42 @@ async function syncMember(member, guild) {
     }
 }
 
-async function getMember(memberId) {
+async function getMember(memberId, username = null, displayName = null) {
     if (!dbAvailable) return null;
     try {
-        return await getMemberByDiscordID(memberId);
+        let member = await getMemberByDiscordID(memberId, username, displayName);
+        if (member) return member;
+
+        if (username) {
+            member = await getMemberByUsername(username);
+            if (member) return member;
+        }
+
+        // If member still doesn't exist in DB, create an entry dynamically so attendance can be linked
+        if (memberId && (username || displayName)) {
+            const generatedMemberId = Date.now();
+            const newMember = {
+                member_id: generatedMemberId,
+                members_discord_id: memberId,
+                discord_username: username || displayName,
+                display_name: displayName || username || 'Member',
+                name: displayName || username || 'Member',
+                role: 'Member',
+                belmonts_points: 0,
+            };
+            const { data: inserted, error: insertErr } = await supabase
+                .from('members')
+                .insert(newMember)
+                .select()
+                .maybeSingle();
+
+            if (!insertErr && inserted) {
+                console.log(`✓ Dynamically registered member in database: ${newMember.display_name} (${newMember.discord_username})`);
+                return inserted;
+            }
+        }
+
+        return null;
     } catch (error) {
         console.error('Error getting member:', error);
         return null;
@@ -969,6 +1031,64 @@ async function awardMeetingPoints(meetingId, memberId, pointsToAdd = 10) {
     }
 }
 
+async function clearAllAttendanceData() {
+    if (!dbAvailable) {
+        return { success: false, message: 'Database is not available or disabled.' };
+    }
+    try {
+        // 1. Delete voice sessions
+        await supabase.from('meeting_voice_sessions').delete().neq('voice_session_id', 0);
+        // 2. Delete point awards
+        await supabase.from('meeting_point_awards').delete().neq('meeting_point_award_id', 0);
+        // 3. Delete attendance records
+        await supabase.from('meeting_attendance').delete().neq('meeting_attendance_id', 0);
+        // 4. Delete meetings
+        await supabase.from('meetings').delete().neq('meeting_id', 0);
+        // 5. Delete past gathering confirmations
+        await supabase.from('gathering_confirmations').delete().neq('confirmation_id', 0);
+
+        console.log('✓ All historical meeting and attendance records cleared successfully from database.');
+        return { success: true, message: 'All historical attendance records cleared. Ready to start fresh today onwards!' };
+    } catch (error) {
+        console.error('Error clearing attendance data:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+async function clearOlderAttendanceData(cutoffDateStr = null) {
+    if (!dbAvailable) {
+        return { success: false, message: 'Database is not available or disabled.' };
+    }
+    try {
+        const targetDate = cutoffDateStr || new Date().toISOString().split('T')[0];
+        
+        // Find meetings older than cutoff date
+        const { data: oldMeetings, error: lookupErr } = await supabase
+            .from('meetings')
+            .select('meeting_id')
+            .lt('meeting_date', targetDate);
+
+        if (lookupErr) throw lookupErr;
+
+        const oldIds = (oldMeetings || []).map(m => m.meeting_id);
+        if (oldIds.length > 0) {
+            await supabase.from('meeting_voice_sessions').delete().in('meeting_id', oldIds);
+            await supabase.from('meeting_point_awards').delete().in('meeting_id', oldIds);
+            await supabase.from('meeting_attendance').delete().in('meeting_id', oldIds);
+            await supabase.from('meetings').delete().in('meeting_id', oldIds);
+        }
+
+        // Clean up confirmations prior to targetDate
+        await supabase.from('gathering_confirmations').delete().lt('gathering_date', targetDate);
+
+        console.log(`✓ Cleared attendance records prior to ${targetDate}. Total meetings removed: ${oldIds.length}`);
+        return { success: true, removedCount: oldIds.length, message: `Older attendance records prior to ${targetDate} removed.` };
+    } catch (error) {
+        console.error('Error clearing older attendance data:', error);
+        return { success: false, error: error.message };
+    }
+}
+
 async function getAttendanceAnalytics(limit = 30) {
     if (!dbAvailable) return null;
     try {
@@ -1006,8 +1126,11 @@ async function getAttendanceAnalytics(limit = 30) {
 
         const rows = (attendance || []).map(row => {
             const duration = Number(row.total_duration_minutes || row.voice_duration_minutes || 0);
-            const is45Plus = duration >= 45;
+            const is45Plus = duration >= 45 || row.attendance_status === 'PRESENT';
             const status = row.attendance_status || (is45Plus ? 'PRESENT' : 'SHORT DURATION');
+            const pointsAwarded = (row.points_awarded !== null && row.points_awarded !== undefined && Number(row.points_awarded) > 0)
+                ? Number(row.points_awarded)
+                : (is45Plus ? 10 : 0);
 
             // Find all voice intervals (entry and exit) for this member in this meeting
             const matchedSessions = voiceSessionsData
@@ -1032,13 +1155,28 @@ async function getAttendanceAnalytics(limit = 30) {
                     durationMinutes: duration
                 }] : []);
 
+            let dayName = '';
+            let dateFormatted = '';
+            const mDate = meetingDateMap.get(row.meeting_id) || '';
+            if (mDate) {
+                try {
+                    const [y, m, d] = mDate.split('-').map(Number);
+                    const refDate = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+                    dayName = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long' }).format(refDate);
+                    dateFormatted = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', year: 'numeric' }).format(refDate);
+                } catch (e) {}
+            }
+
             return {
                 ...row,
                 total_duration_minutes: duration,
                 attendance_status: status,
                 is45Plus,
-                meeting_date: meetingDateMap.get(row.meeting_id) || '',
-                points_awarded: row.points_awarded !== undefined ? row.points_awarded : (is45Plus ? 10 : 0),
+                meeting_date: mDate,
+                dayName,
+                dateFormatted,
+                fullLabel: dayName && dateFormatted ? `${dayName}, ${dateFormatted}` : mDate,
+                points_awarded: pointsAwarded,
                 sessions,
                 joinCount: Math.max(1, sessions.length),
                 isRejoined: sessions.length > 1
@@ -1046,18 +1184,175 @@ async function getAttendanceAnalytics(limit = 30) {
         });
 
         const totalVoiceMinutes = rows.reduce((total, row) => total + row.total_duration_minutes, 0);
+        const formattedMeetings = (meetings || []).map(meeting => {
+            let dayName = '';
+            let dateFormatted = '';
+            if (meeting.meeting_date) {
+                try {
+                    const [y, m, d] = meeting.meeting_date.split('-').map(Number);
+                    const refDate = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+                    dayName = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long' }).format(refDate);
+                    dateFormatted = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', year: 'numeric' }).format(refDate);
+                } catch (e) {}
+            }
+            const meetingAttendance = rows.filter(row => row.meeting_id === meeting.meeting_id);
+            const mVoiceMinutes = meetingAttendance.reduce((acc, r) => acc + (r.total_duration_minutes || 0), 0);
+            const qualifiedCount = meetingAttendance.filter(r => r.is45Plus).length;
+            return {
+                ...meeting,
+                dayName,
+                dateFormatted,
+                fullLabel: dayName && dateFormatted ? `${dayName}, ${dateFormatted}` : (meeting.meeting_date || 'Meeting'),
+                totalVoiceMinutes: mVoiceMinutes,
+                qualifiedCount,
+                attendeeCount: meetingAttendance.length,
+                attendance: meetingAttendance,
+            };
+        });
+
         return {
             totalMeetings: meetings.length,
-            totalUniqueAttendees: new Set(rows.map(row => row.member_id)).size,
+            totalUniqueAttendees: new Set(rows.map(row => row.member_id || row.username || row.display_name)).size,
             presentMembers: rows.filter(row => row.is45Plus).length,
             shortDurationMembers: rows.filter(row => !row.is45Plus).length,
             totalVoiceMinutes,
             averageAttendanceMinutes: rows.length ? Math.round(totalVoiceMinutes / rows.length) : 0,
-            history: meetings.map(meeting => ({ ...meeting, attendance: rows.filter(row => row.meeting_id === meeting.meeting_id) })),
+            history: formattedMeetings,
             records: rows,
         };
     } catch (error) {
         console.error('Error getting attendance analytics:', error);
+        return null;
+    }
+}
+
+async function getWeeklyAttendanceReport(days = 7) {
+    if (!dbAvailable) return null;
+    try {
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - days);
+        const startDateStr = startDate.toISOString().split('T')[0];
+
+        const { data: meetings, error: meetingsError } = await supabase
+            .from('meetings')
+            .select('meeting_id, meeting_date, meeting_time, start_time, end_time, duration_minutes, attended_members')
+            .gte('meeting_date', startDateStr)
+            .order('meeting_date', { ascending: false });
+
+        if (meetingsError) throw meetingsError;
+        const meetingList = meetings || [];
+        const meetingIds = meetingList.map(m => m.meeting_id);
+
+        if (meetingIds.length === 0) {
+            return {
+                periodDays: days,
+                startDate: startDateStr,
+                endDate: new Date().toISOString().split('T')[0],
+                totalMeetings: 0,
+                totalVoiceMinutes: 0,
+                attendeesCount: 0,
+                memberSummaries: [],
+                meetings: [],
+            };
+        }
+
+        const { data: attendance, error: attendanceError } = await supabase
+            .from('meeting_attendance')
+            .select('meeting_attendance_id, meeting_id, member_id, display_name, username, total_duration_minutes, voice_duration_minutes, attendance_status, points_awarded, joined_at, left_at')
+            .in('meeting_id', meetingIds);
+
+        if (attendanceError) throw attendanceError;
+
+        // Group attendance by member
+        const memberMap = new Map();
+        (attendance || []).forEach(att => {
+            const key = att.member_id || att.username || att.display_name;
+            if (!memberMap.has(key)) {
+                memberMap.set(key, {
+                    memberId: att.member_id,
+                    displayName: att.display_name || att.username || 'Member',
+                    username: att.username || 'unlinked',
+                    meetingsAttended: 0,
+                    meetingsEligible45: 0,
+                    totalMinutes: 0,
+                    totalPointsEarned: 0,
+                    attendedDates: [],
+                });
+            }
+            const record = memberMap.get(key);
+            const dur = Number(att.total_duration_minutes || att.voice_duration_minutes || 0);
+            const is45 = dur >= 45 || att.attendance_status === 'PRESENT';
+            record.meetingsAttended += 1;
+            if (is45) record.meetingsEligible45 += 1;
+            record.totalMinutes += dur;
+            const points = (att.points_awarded !== null && att.points_awarded !== undefined && Number(att.points_awarded) > 0)
+                ? Number(att.points_awarded)
+                : (is45 ? 10 : 0);
+            record.totalPointsEarned += points;
+            const mDate = meetingList.find(m => m.meeting_id === att.meeting_id)?.meeting_date;
+            if (mDate && !record.attendedDates.includes(mDate)) {
+                record.attendedDates.push(mDate);
+            }
+        });
+
+        // Include remaining clan members who had 0 meetings attended in this period
+        try {
+            const allClan = await getAllMembers();
+            let clanRoster = (allClan && allClan.length > 0) ? allClan : [];
+            if (clanRoster.length === 0) {
+                try {
+                    clanRoster = require('./memberProfiles.json');
+                } catch (e) {}
+            }
+            (clanRoster || []).forEach(member => {
+                const id = member.members_discord_id || member.member_id || member.discordId || member.memberId;
+                const name = member.display_name || member.fullName || member.name;
+                const username = member.discord_username || member.discordUsername;
+                const key = String(id || username || name);
+
+                const alreadyExists = Array.from(memberMap.values()).some(m => 
+                    (id && m.memberId && String(m.memberId) === String(id)) ||
+                    (username && m.username && m.username.toLowerCase() === username.toLowerCase()) ||
+                    (name && m.displayName && m.displayName.toLowerCase() === name.toLowerCase())
+                );
+
+                if (!alreadyExists) {
+                    memberMap.set(key, {
+                        memberId: id,
+                        displayName: name || 'Member',
+                        username: username || 'unlinked',
+                        meetingsAttended: 0,
+                        meetingsEligible45: 0,
+                        totalMinutes: 0,
+                        totalPointsEarned: 0,
+                        attendedDates: [],
+                    });
+                }
+            });
+        } catch (e) {}
+
+        const memberSummaries = Array.from(memberMap.values())
+            .map(m => ({
+                ...m,
+                attendanceRatePercent: meetingList.length > 0 ? Math.round((m.meetingsAttended / meetingList.length) * 100) : 0,
+                averageMinutesPerMeeting: m.meetingsAttended > 0 ? Math.round(m.totalMinutes / m.meetingsAttended) : 0,
+            }))
+            .sort((a, b) => b.totalMinutes - a.totalMinutes);
+
+        const totalVoiceMinutes = memberSummaries.reduce((sum, m) => sum + m.totalMinutes, 0);
+
+        return {
+            periodDays: days,
+            startDate: startDateStr,
+            endDate: new Date().toISOString().split('T')[0],
+            totalMeetings: meetingList.length,
+            totalVoiceMinutes,
+            attendeesCount: memberSummaries.length,
+            memberSummaries,
+            meetings: meetingList,
+        };
+    } catch (err) {
+        console.error('Error generating weekly attendance report:', err);
         return null;
     }
 }
@@ -1528,10 +1823,13 @@ module.exports = {
     getMeetingVoiceSessions,
     awardMeetingPoints,
     getAttendanceAnalytics,
+    getWeeklyAttendanceReport,
     getActiveMeeting,
     getMeetingAttendance,
     getMeetings,
     getMeetingStats,
+    clearAllAttendanceData,
+    clearOlderAttendanceData,
     // Gathering Confirmation functions
     confirmGathering,
     cancelGathering,

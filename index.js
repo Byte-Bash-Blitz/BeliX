@@ -11,10 +11,9 @@ const { handleBirthdayAnnouncement } = require('./features/birthdayAnnouncement'
 const { handleScheduledReminders } = require('./features/scheduledReminders');
 //const { setupDailyQuestion } = require('./features/dailyQuestionPoster');
 const { handleVibeCodeReport } = require('./features/dailyVibeCodeReport');
-const { handleGatheringScheduler } = require('./features/dailyGatheringscheduler');
-const { getGatheringSnapshot } = require('./features/dailyGatheringscheduler');
+const { handleGatheringScheduler, getGatheringSnapshot, getMeetingTrackerData, resetTrackerToFresh, getDateStrInIST, getDayAndDateInfo } = require('./features/dailyGatheringscheduler');
 const { handleVoiceAssistant } = require('./features/voiceAssistant/voiceAssistant');
-const { getAllMembers, getAttendanceAnalytics } = require('./database/db');
+const { getAllMembers, getAttendanceAnalytics, getWeeklyAttendanceReport, clearAllAttendanceData, clearOlderAttendanceData } = require('./database/db');
 // Express setup
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -130,13 +129,13 @@ app.get('/api/overview', async (req, res) => {
         res.json({
             bot: {
                 online: botStatus.isOnline,
-                username: client.user?.tag || 'BeliX#2026',
+                username: client.user?.tag || 'BeliX',
                 uptimeSeconds: botStatus.connectedAt
                     ? Math.floor((Date.now() - new Date(botStatus.connectedAt).getTime()) / 1000)
-                    : 45240, // 12h 34m fallback if just started
-                connectedAt: botStatus.connectedAt || '2026-11-06T21:45:00.000Z',
+                    : (botStatus.startedAt ? Math.floor((Date.now() - new Date(botStatus.startedAt).getTime()) / 1000) : 0),
+                connectedAt: botStatus.connectedAt || botStatus.startedAt || new Date().toISOString(),
                 startedAt: botStatus.startedAt,
-                ping: client.ws.ping >= 0 ? client.ws.ping : 48,
+                ping: client.ws?.ping >= 0 ? client.ws.ping : 0,
                 memoryMb: memoryMb,
                 memoryPercent: memoryPercent,
                 nodeVersion: process.version,
@@ -144,9 +143,9 @@ app.get('/api/overview', async (req, res) => {
                 environment: process.env.NODE_ENV || 'Production',
                 serverName: guilds[0]?.name || 'Belmonts',
                 lastHeartbeat: 'Just now',
-                gatewayStatus: 'Connected',
-                authStatus: 'Verified',
-                wsStatus: 'Active',
+                gatewayStatus: botStatus.isOnline ? 'Connected' : 'Offline',
+                authStatus: botStatus.isOnline ? 'Verified' : 'Pending',
+                wsStatus: botStatus.isOnline ? 'Active' : 'Idle',
                 apiConnectivity: 'Healthy',
                 runtimeStatus: 'Running',
                 lastRestart: 'N/A'
@@ -154,14 +153,14 @@ app.get('/api/overview', async (req, res) => {
             servers: guilds.map(guild => ({
                 id: guild.id,
                 name: guild.name,
-                icon: guild.iconURL({ size: 64 }),
-                memberCount: guild.memberCount,
+                icon: guild.iconURL ? guild.iconURL({ size: 64 }) : null,
+                memberCount: guild.memberCount || 0,
             })),
             totals: {
-                servers: guilds.length || 1,
-                discordMembers: guilds.reduce((sum, guild) => sum + guild.memberCount, 0) || 28,
-                registeredMembers: members.length || 20,
-                messagesProcessed: botStatus.totalMessagesSent,
+                servers: guilds.length,
+                discordMembers: guilds.reduce((sum, guild) => sum + (guild.memberCount || 0), 0),
+                registeredMembers: members ? members.length : 0,
+                messagesProcessed: botStatus.totalMessagesSent || 0,
                 activeGatherings: gathering.isActive ? 1 : 0,
                 aiRequests: 0,
             },
@@ -183,12 +182,43 @@ app.get('/api/overview', async (req, res) => {
 
 app.get('/api/gatherings', async (req, res) => {
     try {
-        const gathering = getGatheringSnapshot(client);
-        const analytics = await getAttendanceAnalytics(10);
-        const recentMeeting = analytics?.history?.[0] || null;
+        const targetDate = req.query.date ? String(req.query.date).trim() : null;
+        const gathering = getGatheringSnapshot(client, targetDate);
+        const analytics = await getAttendanceAnalytics(15);
+        const history = analytics?.history || [];
+        const todayStr = getDateStrInIST(new Date());
+        const queryDate = targetDate || todayStr;
+
+        // Strictly match the queried date! NEVER fall back to history[0] when looking at today!
+        const selectedMeeting = history.find(m => m.meeting_date === queryDate) || null;
+
+        // Merge availableDays from both live gathering snapshot and DB history
+        const dateSet = new Set((gathering.availableDays || []).map(d => d.dateStr));
+        history.forEach(m => {
+            if (m.meeting_date && !dateSet.has(m.meeting_date)) {
+                gathering.availableDays.push({
+                    dateStr: m.meeting_date,
+                    dayName: m.dayName || 'Day',
+                    dateFormatted: m.dateFormatted || m.meeting_date,
+                    fullLabel: m.fullLabel || m.meeting_date,
+                    isToday: m.meeting_date === todayStr,
+                });
+                dateSet.add(m.meeting_date);
+            }
+        });
+        gathering.availableDays.sort((a, b) => b.dateStr.localeCompare(a.dateStr));
+
         res.json({
             gathering,
-            recentMeeting,
+            selectedMeeting,
+            recentMeeting: selectedMeeting,
+            history,
+            availableDays: gathering.availableDays,
+            selectedDate: gathering.selectedDate,
+            dayName: gathering.dayName,
+            dateFormatted: gathering.dateFormatted,
+            fullLabel: gathering.fullLabel,
+            isToday: gathering.isToday,
             commonHallVoiceRoomId: process.env['voiceroom-Common-hall'] || '1304848107095326830',
         });
     } catch (error) {
@@ -204,6 +234,47 @@ app.get('/api/attendance', async (req, res) => {
     } catch (error) {
         console.error('Dashboard attendance error:', error);
         res.status(500).json({ error: 'Unable to load attendance.' });
+    }
+});
+
+// Reset and start fresh endpoints for attendance and voice meetings
+app.post('/api/attendance/reset', async (req, res) => {
+    try {
+        const mode = req.body?.mode || 'all'; // 'all' or 'older'
+        let dbResult = { success: true };
+        if (mode === 'older') {
+            dbResult = await clearOlderAttendanceData();
+        } else {
+            dbResult = await clearAllAttendanceData();
+        }
+
+        const trackerResult = resetTrackerToFresh({ client, keepLiveConnected: true });
+        recordDashboardEvent('attendance', 'Attendance records cleared to start fresh today onwards', 'info');
+
+        res.json({
+            success: true,
+            message: 'Current attendance data removed successfully. Starting fresh from today onwards!',
+            db: dbResult,
+            tracker: trackerResult,
+        });
+    } catch (error) {
+        console.error('Error resetting attendance data:', error);
+        res.status(500).json({ error: 'Failed to reset attendance data.' });
+    }
+});
+
+app.post('/api/meeting/tracker/reset', async (req, res) => {
+    try {
+        const trackerResult = resetTrackerToFresh({ client, keepLiveConnected: true });
+        recordDashboardEvent('tracker', 'Voice activity tracker reset to fresh state', 'info');
+        res.json({
+            success: true,
+            message: 'Voice tracker reset successfully. Fresh tracking started!',
+            tracker: trackerResult,
+        });
+    } catch (error) {
+        console.error('Error resetting voice tracker:', error);
+        res.status(500).json({ error: 'Failed to reset tracker.' });
     }
 });
 
@@ -245,6 +316,87 @@ app.get('/api/attendance/download', async (req, res) => {
     } catch (error) {
         console.error('Dashboard attendance download error:', error);
         res.status(500).send('Error generating attendance report');
+    }
+});
+
+app.get('/api/reports/weekly', async (req, res) => {
+    try {
+        const days = parseInt(req.query.days || '7', 10);
+        const report = await getWeeklyAttendanceReport(days);
+        res.json(report || {
+            periodDays: days,
+            startDate: '',
+            endDate: new Date().toISOString().split('T')[0],
+            totalMeetings: 0,
+            totalVoiceMinutes: 0,
+            attendeesCount: 0,
+            memberSummaries: [],
+            meetings: []
+        });
+    } catch (error) {
+        console.error('Dashboard weekly report error:', error);
+        res.status(500).json({ error: 'Unable to load weekly report.' });
+    }
+});
+
+app.get('/api/reports/weekly/download', async (req, res) => {
+    try {
+        const days = parseInt(req.query.days || '7', 10);
+        const report = await getWeeklyAttendanceReport(days);
+        const summaries = report?.memberSummaries || [];
+
+        let csv = 'Member Name,Discord Username,Meetings Attended,Total Weekly Voice Minutes,45m+ Qualified Meetings,Total Points Earned,Attendance Consistency (%),Attended Dates\n';
+        summaries.forEach(m => {
+            const datesStr = (m.attendedDates || []).join('; ');
+            csv += `"${(m.displayName || '').replace(/"/g, '""')}","${(m.username || '').replace(/"/g, '""')}",${m.meetingsAttended},${m.totalMinutes},${m.meetingsEligible45},${m.totalPointsEarned},${m.attendanceRatePercent}%,"${datesStr.replace(/"/g, '""')}"\n`;
+        });
+
+        const todayStr = new Date().toISOString().split('T')[0];
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="Belmonts_Weekly_Attendance_Report_${todayStr}.csv"`);
+        res.send(csv);
+    } catch (error) {
+        console.error('Weekly report download error:', error);
+        res.status(500).send('Error generating weekly report');
+    }
+});
+
+app.get('/api/meeting/tracker', async (req, res) => {
+    try {
+        const targetDate = req.query.date ? String(req.query.date).trim() : null;
+        const trackerData = await getMeetingTrackerData(client, targetDate);
+        res.json(trackerData);
+    } catch (error) {
+        console.error('Meeting tracker API error:', error);
+        res.status(500).json({ error: 'Unable to retrieve meeting tracker data.' });
+    }
+});
+
+app.get('/api/meeting/tracker/download', async (req, res) => {
+    try {
+        const targetDate = req.query.date ? String(req.query.date).trim() : null;
+        const trackerData = await getMeetingTrackerData(client, targetDate);
+        const members = trackerData?.members || [];
+        const dateStr = trackerData?.selectedDate || new Date().toISOString().split('T')[0];
+        const dayName = trackerData?.dayName || 'Day';
+
+        let csv = 'Meeting Date,Meeting Day,Member Name,Discord Username,Activity Category,Status,Voice Channel,Server,In Time,Out Time,Current/Last Session (Mins),Total Minutes,45m Met?,Points,Total Sessions,Sessions Timeline\n';
+        members.forEach(m => {
+            const sessionsTimeline = (m.sessions || []).map((s, idx) => {
+                const inTime = s.joinedAt ? new Date(s.joinedAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : 'N/A';
+                const outTime = s.isActive ? 'Active' : (s.leftAt ? new Date(s.leftAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : 'Left');
+                return `Session #${idx + 1}: In ${inTime} to Out ${outTime} (${s.durationMinutes}m in ${s.channelName || 'Voice'})`;
+            }).join(' | ') || (m.isActiveMember ? 'Logged in session' : 'Did Not Join Meet');
+
+            csv += `"${dateStr}","${dayName}","${(m.displayName || '').replace(/"/g, '""')}","${(m.username || '').replace(/"/g, '""')}","${m.activityCategory || (m.isActiveMember ? 'ACTIVE' : 'NON_ACTIVE')}","${m.status}","${(m.currentChannelName || '').replace(/"/g, '""')}","${(m.currentServerName || '').replace(/"/g, '""')}","${m.inTime}","${m.outTime}",${m.currentSessionMinutes || 0},${m.totalDurationMinutes || 0},"${m.isEligible45 ? 'YES (45m+)' : 'NO'}",${m.points || 0},${m.joinCount || 0},"${sessionsTimeline.replace(/"/g, '""')}"\n`;
+        });
+
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="Belmonts_Meeting_Voice_Tracker_${dayName}_${dateStr}.csv"`);
+        res.send(csv);
+    } catch (error) {
+        console.error('Meeting tracker download error:', error);
+        res.status(500).send('Error generating meeting tracker CSV');
     }
 });
 

@@ -8,7 +8,11 @@ const state = {
   activePage: 'bot', // Default active view matches user screenshot
   members: null,
   commands: null,
-  pollTimer: null
+  pollTimer: null,
+  selectedGatheringDate: null,
+  selectedTrackerDate: null,
+  meetingFilter: 'all',
+  meetingSearch: ''
 };
 
 const $ = sel => document.querySelector(sel);
@@ -49,15 +53,15 @@ function formatTimeOnly(isoString) {
 }
 
 function formatDateFull(isoString) {
-  if (!isoString) return 'Nov 7, 2026 • 9:45 PM';
+  if (!isoString) return '--';
   try {
     const d = new Date(isoString);
-    if (isNaN(d.getTime())) return 'Nov 7, 2026 • 9:45 PM';
-    const datePart = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    if (isNaN(d.getTime())) return String(isoString);
+    const datePart = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
     const timePart = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
     return `${datePart} • ${timePart}`;
   } catch (e) {
-    return 'Nov 7, 2026 • 9:45 PM';
+    return String(isoString || '--');
   }
 }
 
@@ -637,21 +641,35 @@ function renderSessionTimeline(sessions, fallbackJoined, fallbackLeft, fallbackT
 
 function renderGatheringsPage(gData) {
   const g = gData.gathering || {};
-  const recent = gData.recentMeeting || {};
+  const selectedMeeting = gData.selectedMeeting || {};
   const isLive = Boolean(g.isActive);
   const liveMembers = g.liveVoiceMembers || [];
+  const nonActiveClan = g.nonActiveMembers || [];
+  const dayName = gData.dayName || g.dayName || '';
+  const dateFormatted = gData.dateFormatted || g.dateFormatted || '';
+  const fullLabel = gData.fullLabel || g.fullLabel || (dayName ? `${dayName}, ${dateFormatted}` : "Today's Gathering");
+  const isToday = gData.isToday !== undefined ? gData.isToday : (g.isToday !== undefined ? g.isToday : true);
+
+  // Available meeting days for day-by-day navigation
+  const availableDays = Array.isArray(gData.availableDays) && gData.availableDays.length > 0
+    ? gData.availableDays
+    : [{ dateStr: gData.selectedDate || 'today', dayName: gData.dayName || 'Today', dateFormatted: gData.dateFormatted || '', fullLabel: fullLabel, isToday: isToday }];
+  const currentSelectedDate = gData.selectedDate || (availableDays[0] ? availableDays[0].dateStr : '');
   
-  // Attendees who joined this gathering session
+  // Attendees who joined this gathering session strictly on this day:
+  // Live / day-partitioned tracking: g.participants.
+  // Database records: selectedMeeting.attendance (only present if matching this exact date).
+  // NEVER borrow or display attendance from a different date!
   const attendees = (g.participants && g.participants.length > 0)
     ? g.participants
-    : (recent.attendance && recent.attendance.length > 0)
-      ? recent.attendance.map(a => ({
+    : (selectedMeeting && selectedMeeting.attendance && selectedMeeting.attendance.length > 0 && selectedMeeting.meeting_date === currentSelectedDate)
+      ? selectedMeeting.attendance.map(a => ({
           displayName: a.display_name || a.name,
           username: a.username,
           totalDurationMinutes: a.total_duration_minutes,
           isEligible45: a.total_duration_minutes >= 45 || a.is45Plus,
           status: a.status || (isLive ? 'In Voice' : 'Completed'),
-          joinedAt: a.joined_at || recent.start_time,
+          joinedAt: a.joined_at || selectedMeeting.start_time,
           leftAt: a.left_at,
           sessions: a.sessions || [],
           joinCount: a.joinCount || (a.sessions ? a.sessions.length : 1),
@@ -675,22 +693,41 @@ function renderGatheringsPage(gData) {
         </p>
       </div>
 
-      <div style="display: flex; gap: 12px; align-items: center;">
+      <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
         <div class="glass-pill" style="font-size: 13px;">
           👥 Active in Voice: <strong style="color: #22c55e; margin-left: 4px;">${liveMembers.length}</strong>
         </div>
         <div class="glass-pill" style="font-size: 13px;">
-          📋 Session Attendees: <strong style="color: #38bdf8; margin-left: 4px;">${attendees.length}</strong>
+          📋 Active Attendees: <strong style="color: #38bdf8; margin-left: 4px;">${attendees.length}</strong>
+        </div>
+        <div class="glass-pill" style="font-size: 13px;">
+          ⚪ Non-Active / Absent: <strong style="color: #94a3b8; margin-left: 4px;">${nonActiveClan.length}</strong>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Section 1: Members Currently in Common Hall Voice Channel -->
+  <!-- Day-by-Day Selector Tabs -->
+  <div class="day-selector-bar">
+    <div class="day-selector-label">
+      <span>📅 Select Gathering Day:</span>
+    </div>
+    <div class="day-tabs">
+      ${availableDays.map(d => `
+        <button class="day-tab-btn gathering-day-tab-btn ${d.dateStr === currentSelectedDate ? 'active' : ''}" data-date="${escapeHtml(d.dateStr)}">
+          <span class="day-tab-day">${escapeHtml(d.dayName)}</span>
+          <span class="day-tab-date">${escapeHtml(d.dateFormatted)}</span>
+          ${d.isToday ? '<span class="day-tab-pill">TODAY</span>' : ''}
+        </button>
+      `).join('')}
+    </div>
+  </div>
+
+  <!-- Section 1: Members Currently in Gathering Voice Channel -->
   <div class="glass-card" style="margin-bottom: 20px;">
     <div class="card-heading">
       <span class="icon-blue">🎙️</span>
-      <span>Members Currently in Common Hall Voice Room (${liveMembers.length})</span>
+      <span>Members Currently in Gathering Voice Rooms (${liveMembers.length})</span>
     </div>
 
     ${liveMembers.length > 0 ? `
@@ -703,6 +740,9 @@ function renderGatheringsPage(gData) {
               <div class="voice-member-meta">
                 <span class="status-dot"></span>
                 <span>@${escapeHtml(m.username)}</span>
+                <span style="color: #64748b;">•</span>
+                <span style="color: #38bdf8; font-weight: 600;">🔊 ${escapeHtml(m.channelName || 'Voice')}</span>
+                ${m.serverName ? `<span class="badge-stable" style="font-size: 10px; padding: 1px 6px; margin-left: 4px;">${escapeHtml(m.serverName)}</span>` : ''}
               </div>
             </div>
           </div>
@@ -710,16 +750,21 @@ function renderGatheringsPage(gData) {
       </div>
     ` : `
       <div class="empty-notice-box">
-        ℹ No members currently connected to the Common Hall voice channel. When members connect, their names and profiles appear here live in real-time.
+        ℹ No members currently connected to the gathering voice channels. When members connect, their names and profiles appear here live in real-time.
       </div>
     `}
   </div>
 
   <!-- Section 2: Members Who Joined (Attendance Names, Times & Sessions) -->
-  <div class="glass-card">
-    <div class="card-heading">
-      <span class="icon-blue">👥</span>
-      <span>Members Who Joined ${isLive ? "Today's Gathering" : "Recent Gathering Session"} (${attendees.length})</span>
+  <div class="glass-card" style="margin-bottom: 20px;">
+    <div class="card-heading" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span class="icon-blue">👥</span>
+        <span>Members Who Joined Gathering — <strong style="color: #38bdf8;">${escapeHtml(fullLabel)}</strong> (${attendees.length})</span>
+      </div>
+      <span class="badge-stable" style="font-size: 11px;">
+        📅 Day-by-Day Partitioned
+      </span>
     </div>
 
     ${attendees.length > 0 ? `
@@ -728,7 +773,8 @@ function renderGatheringsPage(gData) {
           <thead>
             <tr>
               <th>Member Name</th>
-              <th>Current Voice State</th>
+              <th>Meeting Date & Day</th>
+              <th>Voice Status</th>
               <th>Total Time in Voice</th>
               <th>45-Min Requirement</th>
               <th>Times Joined</th>
@@ -748,6 +794,12 @@ function renderGatheringsPage(gData) {
                     <div style="display: flex; flex-direction: column;">
                       <strong style="color: #fff; font-size: 14px;">${escapeHtml(a.displayName || a.username || 'Member')}</strong>
                       <span style="color: #38bdf8; font-family: var(--font-mono); font-size: 12px;">@${escapeHtml(a.username || 'unknown')}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div style="display: flex; flex-direction: column;">
+                      <strong style="color: #cbd5e1; font-size: 13px;">${escapeHtml(a.dateFormatted || dateFormatted)}</strong>
+                      <span style="color: #38bdf8; font-size: 11.5px; font-weight: 600;">${escapeHtml(a.dayName || dayName)}</span>
                     </div>
                   </td>
                   <td>
@@ -779,14 +831,60 @@ function renderGatheringsPage(gData) {
       </div>
     ` : `
       <div class="empty-notice-box">
-        No attendance records found yet for this gathering session.
+        No attendance records found for ${escapeHtml(fullLabel)}.
       </div>
     `}
-  </div>`;
+  </div>
+
+  <!-- Section 3: Non-Active Clan Members (Absent from Gathering) -->
+  ${nonActiveClan.length > 0 ? `
+  <div class="glass-card">
+    <div class="card-heading">
+      <span class="icon-blue">⚪</span>
+      <span>Clan Members Not Yet Joined Today's Gathering (${nonActiveClan.length})</span>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; margin-top: 14px;">
+      ${nonActiveClan.map(m => `
+        <div style="display: flex; align-items: center; gap: 10px; background: rgba(15, 23, 42, 0.45); border: 1px solid rgba(148, 163, 184, 0.15); border-radius: 8px; padding: 10px 14px;">
+          <div style="width: 32px; height: 32px; border-radius: 50%; background: #334155; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: #94a3b8;">
+            ${escapeHtml((m.displayName || m.username || 'U')[0].toUpperCase())}
+          </div>
+          <div style="min-width: 0; flex: 1;">
+            <div style="color: #cbd5e1; font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+              ${escapeHtml(m.displayName || m.username)}
+            </div>
+            <div style="color: #64748b; font-size: 11.5px;">
+              ${escapeHtml(m.role || 'Absent')}
+            </div>
+          </div>
+          <span class="badge-short" style="font-size: 10px; padding: 2px 7px;">Absent</span>
+        </div>
+      `).join('')}
+    </div>
+  </div>
+  ` : ''}
+  `;
+}
+
+function attachGatheringsPageEvents(gData) {
+  $$('.gathering-day-tab-btn').forEach(btn => {
+    btn.onclick = async () => {
+      const selectedDate = btn.dataset.date;
+      state.selectedGatheringDate = selectedDate;
+      try {
+        const updatedData = await api(`/api/gatherings?date=${encodeURIComponent(selectedDate)}`);
+        $('#content').innerHTML = renderGatheringsPage(updatedData);
+        attachGatheringsPageEvents(updatedData);
+      } catch (err) {
+        showToast('⚠️ Failed to load gathering data for selected day');
+      }
+    };
+  });
 }
 
 function renderAttendancePage(attData) {
   const records = Array.isArray(attData?.records) ? attData.records : [];
+  const history = Array.isArray(attData?.history) ? attData.history : [];
 
   const presentCount = records.filter(r => r.total_duration_minutes >= 45 || r.is45Plus).length;
   const shortCount = records.filter(r => (r.total_duration_minutes < 45) && !r.is45Plus).length;
@@ -845,6 +943,45 @@ function renderAttendancePage(attData) {
     </div>
   </div>
 
+  <!-- Day-by-Day Meeting History Cards -->
+  ${history.length > 0 ? `
+  <div class="glass-card" style="margin-bottom: 20px;">
+    <div class="card-heading" style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span class="icon-blue">📅</span>
+        <span>Day-by-Day Gathering Sessions & Attendance Records (${history.length} Days)</span>
+      </div>
+      <span class="badge-stable" style="font-size: 11px;">Organized Day-by-Day</span>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px;">
+      ${history.map(h => `
+        <div style="background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 10px; padding: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
+            <div>
+              <div style="color: #38bdf8; font-weight: 700; font-size: 14px;">${escapeHtml(h.dayName || 'Meeting')}</div>
+              <div style="color: #e2e8f0; font-size: 12.5px; font-family: var(--font-mono);">${escapeHtml(h.meeting_date || h.dateFormatted || '')}</div>
+            </div>
+            <span class="badge-stable" style="font-size: 10.5px;">Recorded</span>
+          </div>
+          <div style="display: flex; gap: 12px; margin-top: 10px; font-size: 12px;">
+            <div style="color: #94a3b8;">
+              Attendees: <strong style="color: #fff;">${h.total_attendees || (h.attendance ? h.attendance.length : 0)}</strong>
+            </div>
+            <div style="color: #94a3b8;">
+              45m+ Qualified: <strong style="color: #22c55e;">${h.qualified_count || 0}</strong>
+            </div>
+          </div>
+          <div style="margin-top: 10px;">
+            <button class="btn-attendance-view-day" data-date="${escapeHtml(h.meeting_date || h.dateStr)}" style="background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 6px; color: #38bdf8; font-size: 11.5px; padding: 5px 10px; cursor: pointer; font-weight: 600; width: 100%; text-align: center;">
+              View Day in Gathering Tracker ➔
+            </button>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  </div>
+  ` : ''}
+
   <!-- Filter & Download Bar -->
   <div class="glass-card" style="margin-bottom: 20px;">
     <div class="filter-bar">
@@ -854,11 +991,15 @@ function renderAttendancePage(attData) {
         <button class="tab-btn" data-filter="short">⏳ &lt; 45 Mins Short Duration (${shortCount})</button>
       </div>
 
-      <div style="display: flex; gap: 10px; align-items: center;">
-        <input type="text" id="attendance-search" class="search-box" style="width: 260px;" placeholder="Search member name...">
+      <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <input type="text" id="attendance-search" class="search-box" style="width: 230px;" placeholder="Search member name...">
         <button id="btn-download-csv" class="btn-download-report" title="Download Complete Attendance Report in CSV format">
           <span>📥</span>
           <span>Download Report (.CSV)</span>
+        </button>
+        <button id="btn-reset-attendance" class="btn-reset-danger" title="Clear all previous and current attendance records and start fresh today onwards">
+          <span>🧹</span>
+          <span>Start Fresh Today</span>
         </button>
       </div>
     </div>
@@ -871,7 +1012,7 @@ function renderAttendancePage(attData) {
           <tr>
             <th>Member Name</th>
             <th>Discord Username</th>
-            <th>Meeting Date</th>
+            <th>Meeting Date & Day</th>
             <th>Total Voice Minutes</th>
             <th>45-Minute Status</th>
             <th>Points Awarded</th>
@@ -883,7 +1024,10 @@ function renderAttendancePage(attData) {
           ${records.map(r => {
             const is45 = (r.total_duration_minutes >= 45 || r.is45Plus);
             const rowFilterType = is45 ? 'present' : 'short';
-            const points = r.points_awarded !== undefined ? r.points_awarded : (is45 ? 10 : 0);
+            const statusText = r.attendance_status || (is45 ? 'PRESENT' : 'SHORT DURATION');
+            const points = (r.points_awarded !== undefined && r.points_awarded !== null && Number(r.points_awarded) > 0)
+              ? Number(r.points_awarded)
+              : (is45 ? 10 : 0);
             const joinCount = r.joinCount || (r.sessions ? r.sessions.length : 1);
             const hasRejoined = r.isRejoined || joinCount > 1;
 
@@ -891,15 +1035,20 @@ function renderAttendancePage(attData) {
               <tr data-type="${rowFilterType}">
                 <td><strong style="color: #fff; font-size: 14px;">${escapeHtml(r.display_name || r.name || 'Member')}</strong></td>
                 <td style="color: #38bdf8; font-family: var(--font-mono);">@${escapeHtml(r.username || 'unlinked')}</td>
-                <td style="color: #94a3b8;">${escapeHtml(r.meeting_date || '')}</td>
+                <td>
+                  <div style="display: flex; flex-direction: column;">
+                    <strong style="color: #cbd5e1; font-size: 13px;">${escapeHtml(r.meeting_date || r.dateFormatted || '')}</strong>
+                    <span style="color: #38bdf8; font-size: 11.5px; font-weight: 600;">${escapeHtml(r.dayName || '')}</span>
+                  </div>
+                </td>
                 <td style="font-weight: 700; color: #fff; font-family: var(--font-mono); font-size: 14.5px;">${r.total_duration_minutes || 0} mins</td>
                 <td>
-                  ${is45
+                  ${statusText === 'PRESENT'
                     ? '<span class="badge-present">PRESENT (45m+)</span>'
                     : '<span class="badge-short">SHORT DURATION (&lt;45m)</span>'}
                 </td>
-                <td style="font-weight: 700; color: ${is45 ? '#22c55e' : '#94a3b8'};">
-                  ${is45 ? '+10 pts' : '0 pts'}
+                <td style="font-weight: 700; color: ${points > 0 ? '#22c55e' : '#94a3b8'};">
+                  ${points > 0 ? `+${points} pts` : '0 pts'}
                 </td>
                 <td>
                   ${hasRejoined
@@ -950,6 +1099,44 @@ function attachAttendancePageEvents(records) {
       applyAttendanceFilters(activeFilter, e.target.value);
     };
   }
+
+  // 4. View Day in Gathering Tracker buttons
+  $$('.btn-attendance-view-day').forEach(btn => {
+    btn.onclick = async () => {
+      state.selectedGatheringDate = btn.dataset.date;
+      $$('.nav-item').forEach(i => i.classList.remove('active'));
+      const gNav = document.querySelector('[data-page="gatherings"]');
+      if (gNav) gNav.classList.add('active');
+      await renderPage('gatherings');
+    };
+  });
+
+  // 5. Reset & Start Fresh Button
+  const resetBtn = $('#btn-reset-attendance');
+  if (resetBtn) {
+    resetBtn.onclick = async () => {
+      const confirmed = confirm('Are you sure you want to remove all current attendance data and start fresh today onwards?');
+      if (!confirmed) return;
+      try {
+        const res = await fetch('/api/attendance/reset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: 'all' })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('✅ Attendance records cleared! Starting fresh today onwards.');
+          state.selectedGatheringDate = null;
+          state.selectedTrackerDate = null;
+          await renderPage('attendance');
+        } else {
+          showToast('⚠️ Reset notice: ' + (data.error || 'Failed'));
+        }
+      } catch (err) {
+        showToast('❌ Reset error: ' + err.message);
+      }
+    };
+  }
 }
 
 function applyAttendanceFilters(filter, query) {
@@ -967,12 +1154,14 @@ function downloadAttendanceCsv(records) {
     showToast('⚠️ No attendance records available to export.');
     return;
   }
-  let csv = 'Member Name,Discord Username,Meeting Date,Total Duration (Minutes),45m Status,Points Awarded,Times Joined,Entry & Exit Timeline\n';
+  let csv = '\uFEFFMember Name,Discord Username,Meeting Date,Day of Week,Total Duration (Minutes),45m Status,Points Awarded,Times Joined,Entry & Exit Timeline\n';
   records.forEach(r => {
     const is45 = r.total_duration_minutes >= 45 || r.is45Plus;
     const status = is45 ? 'PRESENT (45m+)' : 'SHORT DURATION (<45m)';
     const pts = r.points_awarded !== undefined ? r.points_awarded : (is45 ? 10 : 0);
     const joinCount = r.joinCount || (r.sessions ? r.sessions.length : 1);
+    const meetingDate = r.meeting_date || r.dateFormatted || '';
+    const dayOfWeek = r.dayName || '';
 
     // Format entry & exit timeline
     let timelineStr = '';
@@ -989,7 +1178,7 @@ function downloadAttendanceCsv(records) {
       timelineStr = `Session #1: In ${inTime} -> Out ${outTime} (${r.total_duration_minutes || 0}m)`;
     }
 
-    csv += `"${(r.display_name || r.name || '').replace(/"/g, '""')}","${(r.username || '').replace(/"/g, '""')}","${r.meeting_date || ''}",${r.total_duration_minutes || 0},"${status}",${pts},${joinCount},"${timelineStr.replace(/"/g, '""')}"\n`;
+    csv += `"${(r.display_name || r.name || '').replace(/"/g, '""')}","${(r.username || '').replace(/"/g, '""')}","${meetingDate}","${dayOfWeek}",${r.total_duration_minutes || 0},"${status}",${pts},${joinCount},"${timelineStr.replace(/"/g, '""')}"\n`;
   });
 
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -1001,6 +1190,692 @@ function downloadAttendanceCsv(records) {
   a.click();
   document.body.removeChild(a);
   showToast('📥 Attendance report CSV downloaded successfully!');
+}
+
+function downloadWeeklyReportCsv(rep) {
+  try {
+    const a = document.createElement('a');
+    a.href = '/api/reports/weekly/download';
+    a.download = `Belmonts_Weekly_Attendance_Report_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    showToast('📥 Weekly attendance report downloaded successfully!');
+    return;
+  } catch (e) {}
+
+  const summaries = rep?.memberSummaries || [];
+  if (summaries.length === 0) {
+    showToast('⚠️ No weekly attendance data available to download.');
+    return;
+  }
+  let csv = 'Member Name,Discord Username,Meetings Attended,Total Weekly Voice Minutes,45m+ Qualified Meetings,Total Points Earned,Attendance Consistency (%),Attended Dates\n';
+  summaries.forEach(m => {
+    const datesStr = (m.attendedDates || []).join('; ');
+    csv += `"${(m.displayName || '').replace(/"/g, '""')}","${(m.username || '').replace(/"/g, '""')}",${m.meetingsAttended},${m.totalMinutes},${m.meetingsEligible45},${m.totalPointsEarned},${m.attendanceRatePercent}%,"${datesStr.replace(/"/g, '""')}"\n`;
+  });
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Belmonts_Weekly_Attendance_Report_${new Date().toISOString().split('T')[0]}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  showToast('📥 Weekly attendance report downloaded successfully!');
+}
+
+function renderReportsPage(rep) {
+  const summaries = rep?.memberSummaries || [];
+  const totalMeetings = rep?.totalMeetings || 0;
+  const totalMins = rep?.totalVoiceMinutes || 0;
+  const attendeesCount = rep?.attendeesCount || 0;
+  const avgConsistency = summaries.length > 0
+    ? Math.round(summaries.reduce((acc, m) => acc + (m.attendanceRatePercent || 0), 0) / summaries.length)
+    : 0;
+
+  return `
+  <!-- Top 4 Summary Cards -->
+  <div class="metrics-grid-4">
+    <div class="glass-card metric-card">
+      <div class="metric-header">
+        <div class="metric-icon-bubble icon-ping">📅</div>
+        <div class="metric-title">Weekly Meetings Held</div>
+      </div>
+      <div class="metric-body">
+        <div class="metric-number">${totalMeetings}</div>
+        <div class="metric-meta-text">Last 7 Days</div>
+      </div>
+      <div class="metric-sub-muted" style="margin-top: 6px;">Daily Common Hall & Gathering sessions</div>
+    </div>
+
+    <div class="glass-card metric-card">
+      <div class="metric-header">
+        <div class="metric-icon-bubble icon-uptime">👥</div>
+        <div class="metric-title">Active Attendees</div>
+      </div>
+      <div class="metric-body">
+        <div class="metric-number">${attendeesCount}</div>
+        <span class="badge-stable">Belmonts</span>
+      </div>
+      <div class="metric-sub-muted" style="margin-top: 6px;">Members who attended voice meetings</div>
+    </div>
+
+    <div class="glass-card metric-card">
+      <div class="metric-header">
+        <div class="metric-icon-bubble" style="background: rgba(59, 130, 246, 0.2); color: #60a5fa;">⏱️</div>
+        <div class="metric-title">Total Voice Time</div>
+      </div>
+      <div class="metric-body">
+        <div class="metric-number">${totalMins}m</div>
+        <span class="badge-running">Recorded</span>
+      </div>
+      <div class="metric-sub-muted" style="margin-top: 6px;">Across all tracked servers & channels</div>
+    </div>
+
+    <div class="glass-card metric-card">
+      <div class="metric-header">
+        <div class="metric-icon-bubble" style="background: rgba(16, 185, 129, 0.2); color: #22c55e;">🎯</div>
+        <div class="metric-title">Overall Consistency</div>
+      </div>
+      <div class="metric-body">
+        <div class="metric-number" style="color: #22c55e;">${avgConsistency}%</div>
+        <span class="badge-present">45m+ Met</span>
+      </div>
+      <div class="metric-sub-muted" style="margin-top: 6px;">Average weekly gathering attendance rate</div>
+    </div>
+  </div>
+
+  <!-- Weekly Report Action Bar -->
+  <div class="glass-card" style="margin-bottom: 20px;">
+    <div class="filter-bar">
+      <div>
+        <h3 style="color: #fff; font-size: 16px; font-weight: 700; margin-bottom: 4px;">📊 Weekly Attendance & Consistency Report</h3>
+        <p style="color: #94a3b8; font-size: 12.5px;">Aggregated clan participation, total hours, points earned, and 45-minute continuous voice consistency.</p>
+      </div>
+
+      <div style="display: flex; gap: 10px; align-items: center;">
+        <input type="text" id="report-search" class="search-box" style="width: 250px;" placeholder="Search member...">
+        <button id="btn-download-weekly-csv" class="btn-download-report" title="Download Complete 7-Day Attendance Report in CSV format">
+          <span>📥</span>
+          <span>Download Weekly Report (.CSV)</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrap">
+      ${summaries.length > 0 ? `
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Member Name</th>
+            <th>Discord Username</th>
+            <th>Meetings Attended</th>
+            <th>Weekly Voice Time</th>
+            <th>45m+ Qualified</th>
+            <th>Total Points Earned</th>
+            <th>Consistency</th>
+            <th>Attended Dates</th>
+          </tr>
+        </thead>
+        <tbody id="report-tbody">
+          ${summaries.map(m => `
+            <tr>
+              <td><strong style="color: #fff; font-size: 14px;">${escapeHtml(m.displayName || 'Member')}</strong></td>
+              <td style="color: #38bdf8; font-family: var(--font-mono);">@${escapeHtml(m.username || 'unlinked')}</td>
+              <td style="font-weight: 700; color: #fff;">${m.meetingsAttended} / ${totalMeetings}</td>
+              <td style="font-weight: 700; color: #38bdf8; font-family: var(--font-mono);">${m.totalMinutes} mins</td>
+              <td><span class="badge-present">${m.meetingsEligible45} meetings</span></td>
+              <td style="font-weight: 700; color: #22c55e;">+${m.totalPointsEarned} pts</td>
+              <td>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span style="font-weight: 700; color: ${m.attendanceRatePercent >= 70 ? '#22c55e' : (m.attendanceRatePercent >= 40 ? '#f59e0b' : '#ef4444')};">
+                    ${m.attendanceRatePercent}%
+                  </span>
+                </div>
+              </td>
+              <td>
+                <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+                  ${(m.attendedDates || []).map(d => `<span class="badge-stable" style="font-size: 10.5px;">${escapeHtml(d)}</span>`).join('')}
+                </div>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      ` : `
+        <div class="empty-notice-box">
+          ℹ No meeting attendance data recorded yet in the last 7 days. When gathering meetings are held and completed, weekly statistics and member summaries will appear here dynamically.
+        </div>
+      `}
+    </div>
+  </div>`;
+}
+
+function attachReportsPageEvents(rep) {
+  const dlBtn = $('#btn-download-weekly-csv');
+  if (dlBtn) {
+    dlBtn.onclick = () => {
+      downloadWeeklyReportCsv(rep);
+    };
+  }
+
+  const searchInput = $('#report-search');
+  if (searchInput) {
+    searchInput.oninput = e => {
+      const q = e.target.value.toLowerCase().trim();
+      $$('#report-tbody tr').forEach(row => {
+        row.style.display = (!q || row.textContent.toLowerCase().includes(q)) ? '' : 'none';
+      });
+    };
+  }
+}
+
+function downloadMeetingTrackerCsv(trackerData) {
+  const targetDate = trackerData?.selectedDate || state.selectedTrackerDate || '';
+  const dayName = trackerData?.dayName || '';
+  const dateFormatted = trackerData?.dateFormatted || '';
+
+  const url = targetDate 
+    ? `/api/meeting/tracker/download?date=${encodeURIComponent(targetDate)}`
+    : '/api/meeting/tracker/download';
+
+  window.location.href = url;
+  showToast(`📥 Downloading Voice Tracker CSV for ${dayName} (${dateFormatted || 'Report'})...`);
+}
+
+function renderMeetingTrackerPage(trackerData, currentFilter = 'all', currentSearch = '') {
+  const members = trackerData?.members || [];
+  const liveMembers = trackerData?.liveMembers || [];
+  const activeMembers = trackerData?.activeMembers || members.filter(m => m.isActiveMember !== false && m.activityCategory !== 'NON_ACTIVE' && (m.isActive || m.totalDurationMinutes > 0));
+  const nonActiveMembers = trackerData?.nonActiveMembers || members.filter(m => m.isActiveMember === false || m.activityCategory === 'NON_ACTIVE');
+  const stats = trackerData?.stats || { 
+    activeVoiceCount: liveMembers.length, 
+    totalClanMembers: members.length, 
+    totalActiveMembersToday: activeMembers.length,
+    nonActiveCount: nonActiveMembers.length,
+    totalVoiceMinutes: 0, 
+    qualified45Count: 0 
+  };
+  const recentEvents = trackerData?.recentEvents || [];
+  const isMeetingActive = Boolean(trackerData?.isOfficialMeetingActive);
+  const currentTime = trackerData?.currentTimeStr || '';
+  const qualifiedCount = stats.qualified45Count !== undefined ? stats.qualified45Count : members.filter(m => m.isEligible45).length;
+
+  const fullLabel = trackerData?.fullLabel || (trackerData?.dayName ? `${trackerData.dayName}, ${trackerData.dateFormatted}` : "Today's Voice Activity");
+  const isToday = trackerData?.isToday !== false;
+  const availableDays = Array.isArray(trackerData?.availableDays) && trackerData.availableDays.length > 0
+    ? trackerData.availableDays
+    : [{ dateStr: trackerData?.selectedDate || 'today', dayName: trackerData?.dayName || 'Today', dateFormatted: trackerData?.dateFormatted || '', fullLabel: fullLabel, isToday: isToday }];
+  const currentSelectedDate = trackerData?.selectedDate || (availableDays[0] ? availableDays[0].dateStr : '');
+
+  return `
+  <!-- Meeting Status & Tracking Mode Banner -->
+  <div class="glass-card" style="margin-bottom: 20px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px;">
+      <div>
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
+          <h2 style="font-size: 20px; font-weight: 700; color: #fff;">Always-On Meeting Voice Tracker</h2>
+          <span class="badge-running" style="display: inline-flex; align-items: center; gap: 6px;">
+            <span class="status-dot"></span>
+            <span>CONTINUOUS VOICE TRACKING ACTIVE</span>
+          </span>
+          ${isMeetingActive ? '<span class="badge-present">● 1-HR SCHEDULED MEET IN PROGRESS</span>' : ''}
+        </div>
+        <p style="color: #94a3b8; font-size: 13px;">
+          Tracking all voice channels on <strong style="color: #38bdf8;">Belmonts</strong> & dedicated voice room on <strong style="color: #c084fc;">Byte-Bash-Blitz</strong> (<span style="font-family: var(--font-mono); font-size: 11.5px;">1497644587974394087</span>). Every join, leave, re-entry, and duration is logged live.
+        </p>
+      </div>
+
+      <div style="display: flex; gap: 10px; align-items: center;">
+        <div class="glass-pill" style="font-size: 13px;">
+          ⏱️ Clock: <strong style="color: #38bdf8; margin-left: 4px;">${escapeHtml(currentTime)}</strong>
+        </div>
+        <div class="glass-pill" style="font-size: 13px;">
+          🎙️ Live In Voice: <strong style="color: #22c55e; margin-left: 4px;">${stats.activeVoiceCount}</strong>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Day-by-Day Tracked Date Tabs -->
+  <div class="day-selector-bar">
+    <div class="day-selector-label">
+      <span>📅 Select Tracked Day:</span>
+    </div>
+    <div class="day-tabs">
+      ${availableDays.map(d => `
+        <button class="day-tab-btn meeting-day-tab-btn ${d.dateStr === currentSelectedDate ? 'active' : ''}" data-date="${escapeHtml(d.dateStr)}">
+          <span class="day-tab-day">${escapeHtml(d.dayName)}</span>
+          <span class="day-tab-date">${escapeHtml(d.dateFormatted)}</span>
+          ${d.isToday ? '<span class="day-tab-pill">TODAY</span>' : ''}
+        </button>
+      `).join('')}
+    </div>
+  </div>
+
+  <!-- Top 4 Summary Cards -->
+  <div class="metrics-grid-4">
+    <div class="glass-card metric-card">
+      <div class="metric-header">
+        <div class="metric-icon-bubble" style="background: rgba(34, 197, 94, 0.2); color: #22c55e;">🎙️</div>
+        <div class="metric-title">In Voice Right Now</div>
+      </div>
+      <div class="metric-body">
+        <div class="metric-number" style="color: #22c55e;">${stats.activeVoiceCount}</div>
+        <span class="badge-running" style="font-size: 11px;">Live Connected</span>
+      </div>
+      <div class="metric-sub-muted" style="margin-top: 6px;">Active speakers across tracked rooms</div>
+    </div>
+
+    <div class="glass-card metric-card">
+      <div class="metric-header">
+        <div class="metric-icon-bubble" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8;">🟢</div>
+        <div class="metric-title">Active Members (${escapeHtml(trackerData?.dayName || 'Day')})</div>
+      </div>
+      <div class="metric-body">
+        <div class="metric-number" style="color: #38bdf8;">${stats.totalActiveMembersToday || activeMembers.length}</div>
+        <span class="badge-present">Joined Voice</span>
+      </div>
+      <div class="metric-sub-muted" style="margin-top: 6px;">Members with recorded voice time for this day</div>
+    </div>
+
+    <div class="glass-card metric-card">
+      <div class="metric-header">
+        <div class="metric-icon-bubble" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8;">⚪</div>
+        <div class="metric-title">Non-Active Members</div>
+      </div>
+      <div class="metric-body">
+        <div class="metric-number" style="color: #94a3b8;">${stats.nonActiveCount || nonActiveMembers.length}</div>
+        <span class="badge-short" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.3);">Absent</span>
+      </div>
+      <div class="metric-sub-muted" style="margin-top: 6px;">Members without voice presence on this day</div>
+    </div>
+
+    <div class="glass-card metric-card">
+      <div class="metric-header">
+        <div class="metric-icon-bubble" style="background: rgba(168, 85, 247, 0.2); color: #c084fc;">🏆</div>
+        <div class="metric-title">45m+ Qualified</div>
+      </div>
+      <div class="metric-body">
+        <div class="metric-number" style="color: #c084fc;">${qualifiedCount}</div>
+        <span class="badge-present">+10 pts</span>
+      </div>
+      <div class="metric-sub-muted" style="margin-top: 6px;">Met continuous 45-minute voice credit</div>
+    </div>
+  </div>
+
+  <!-- Section 1: Members Currently Connected to Voice -->
+  <div class="glass-card" style="margin-bottom: 20px;">
+    <div class="card-heading">
+      <span class="icon-blue">🔴</span>
+      <span>Live In-Voice Members (${liveMembers.length})</span>
+    </div>
+
+    ${liveMembers.length > 0 ? `
+      <div class="voice-members-grid">
+        ${liveMembers.map(m => {
+          const is45 = m.isEligible45;
+          const pct = Math.min(100, Math.round(((m.totalDurationMinutes || 0) / 45) * 100));
+          return `
+          <div class="voice-member-card">
+            ${m.avatar ? `<img src="${escapeHtml(m.avatar)}" class="voice-member-avatar" alt="avatar">` : `<div class="voice-member-avatar">${escapeHtml((m.displayName || m.username || 'U')[0].toUpperCase())}</div>`}
+            <div style="flex: 1; min-width: 0;">
+              <div class="voice-member-name">${escapeHtml(m.displayName || m.username)}</div>
+              <div class="voice-member-meta" style="margin-bottom: 6px;">
+                <span class="status-dot"></span>
+                <span>@${escapeHtml(m.username)}</span>
+                <span style="color: #64748b;">•</span>
+                <span style="color: #38bdf8; font-weight: 600;">🔊 ${escapeHtml(m.currentChannelName || 'Voice')}</span>
+                ${m.currentServerName ? `<span class="badge-stable" style="font-size: 10px; padding: 1px 6px; margin-left: 4px;">${escapeHtml(m.currentServerName)}</span>` : ''}
+              </div>
+              <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; color: #94a3b8;">
+                <span>📥 In: <strong style="color: #22c55e;">${escapeHtml(m.inTime)}</strong></span>
+                <span>⏱️ Live: <strong style="color: #38bdf8; font-family: var(--font-mono);">${m.totalDurationMinutes}m</strong></span>
+              </div>
+              <div style="background: rgba(255, 255, 255, 0.07); border-radius: 999px; height: 5px; overflow: hidden; margin-top: 6px;">
+                <div style="background: ${is45 ? '#22c55e' : '#38bdf8'}; width: ${pct}%; height: 100%; transition: width 0.3s ease;"></div>
+              </div>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; font-size: 10.5px;">
+                <span style="color: #64748b;">45m Target: ${pct}%</span>
+                <span style="color: ${is45 ? '#22c55e' : '#f59e0b'}; font-weight: 600;">${is45 ? '✓ 45m+ Qualified' : `${45 - (m.totalDurationMinutes || 0)}m remaining`}</span>
+              </div>
+            </div>
+          </div>
+        `;
+        }).join('')}
+      </div>
+    ` : `
+      <div class="empty-notice-box">
+        ℹ No members are currently connected to the voice channels. As soon as anyone joins Belmonts voice or Belmonts-Gathering on Byte-Bash-Blitz, their card and ongoing minutes will appear here live!
+      </div>
+    `}
+  </div>
+
+  <!-- Section 2: Complete In and Out Minutes Tracking Table -->
+  <div class="glass-card" style="margin-bottom: 20px;">
+    <div class="filter-bar">
+      <div>
+        <h3 style="color: #fff; font-size: 16px; font-weight: 700; margin-bottom: 4px;">
+          📋 Voice Attendance & In/Out Minutes Tracker — <span style="color: #38bdf8;">${escapeHtml(fullLabel)}</span>
+        </h3>
+        <p style="color: #94a3b8; font-size: 12.5px;">
+          Day-by-day record of member join/leave times, session minutes, and re-entry timeline for <strong>${escapeHtml(fullLabel)}</strong>.
+        </p>
+      </div>
+
+      <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+        <input type="text" id="meeting-search" class="search-box" style="width: 200px;" placeholder="Search member...">
+        
+        <div class="filter-group">
+          <button class="filter-btn meeting-filter-btn ${currentFilter === 'all' ? 'active' : ''}" data-filter="all">All (${members.length})</button>
+          <button class="filter-btn meeting-filter-btn ${currentFilter === 'active-live' ? 'active' : ''}" data-filter="active-live">🎙️ In Voice (${liveMembers.length})</button>
+          <button class="filter-btn meeting-filter-btn ${currentFilter === 'active' ? 'active' : ''}" data-filter="active">🟢 Active (${activeMembers.length})</button>
+          <button class="filter-btn meeting-filter-btn ${currentFilter === 'non-active' ? 'active' : ''}" data-filter="non-active">⚪ Non-Active (${nonActiveMembers.length})</button>
+          <button class="filter-btn meeting-filter-btn ${currentFilter === '45m' ? 'active' : ''}" data-filter="45m">🏆 45m+ Met (${qualifiedCount})</button>
+        </div>
+
+        <button id="btn-download-meeting-csv" class="btn-download-report" title="Download Full Voice In & Out Report as CSV for this Day">
+          <span>📥</span>
+          <span>Download Voice Log (.CSV)</span>
+        </button>
+
+        <button id="btn-reset-tracker" class="btn-reset-danger" title="Clear voice tracking history and start fresh today onwards">
+          <span>🧹</span>
+          <span>Start Fresh Today</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrap">
+      ${members.length > 0 ? `
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Member</th>
+            <th>Meeting Date & Day</th>
+            <th>Status</th>
+            <th>Voice Room</th>
+            <th>In Time (Join)</th>
+            <th>Out Time (Leave)</th>
+            <th>Session Duration</th>
+            <th>Total Voice Time</th>
+            <th>Entry & Exit Timeline (Sessions)</th>
+            <th>45m Points</th>
+          </tr>
+        </thead>
+        <tbody id="meeting-tracker-tbody">
+          ${members.map(m => {
+            const isNonActive = (m.activityCategory === 'NON_ACTIVE' || m.isActiveMember === false);
+            const inVoice = m.isActive;
+            const is45 = m.isEligible45;
+            const joinCount = m.joinCount || (m.sessions ? m.sessions.length : 0);
+            const hasRejoined = m.isRejoined || joinCount > 1;
+
+            if (isNonActive) {
+              return `
+              <tr data-status="non-active" data-category="non-active" data-is45="false">
+                <td>
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="width: 32px; height: 32px; border-radius: 50%; background: #334155; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; color: #94a3b8;">${escapeHtml((m.displayName || m.username || 'U')[0].toUpperCase())}</div>
+                    <div style="display: flex; flex-direction: column;">
+                      <strong style="color: #cbd5e1; font-size: 14px;">${escapeHtml(m.displayName || m.username)}</strong>
+                      <span style="color: #64748b; font-family: var(--font-mono); font-size: 12px;">@${escapeHtml(m.username)}</span>
+                    </div>
+                  </div>
+                </td>
+                <td>
+                  <div style="display: flex; flex-direction: column;">
+                    <span style="color: #94a3b8; font-size: 12px;">${escapeHtml(trackerData?.dateFormatted || '')}</span>
+                    <span style="color: #64748b; font-size: 11px;">${escapeHtml(trackerData?.dayName || '')}</span>
+                  </div>
+                </td>
+                <td>
+                  <span class="badge-short" style="background: rgba(148, 163, 184, 0.12); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.25);">
+                    ⚪ Non-Active / Absent
+                  </span>
+                </td>
+                <td>
+                  <span style="color: #64748b; font-size: 12.5px;">—</span>
+                </td>
+                <td style="font-family: var(--font-mono); color: #64748b; font-size: 12px;">
+                  Did Not Join
+                </td>
+                <td style="font-family: var(--font-mono); font-size: 12px; color: #64748b;">
+                  Absent
+                </td>
+                <td style="font-family: var(--font-mono); font-size: 12.5px; color: #64748b;">
+                  0 mins
+                </td>
+                <td style="font-family: var(--font-mono); font-weight: 600; font-size: 13px; color: #64748b;">
+                  0 mins
+                </td>
+                <td>
+                  <span style="color: #64748b; font-size: 11.5px; font-style: italic;">Did not join meeting voice</span>
+                </td>
+                <td>
+                  <span class="badge-short" style="opacity: 0.65;">0 pts (Absent)</span>
+                </td>
+              </tr>
+              `;
+            }
+
+            return `
+            <tr data-status="${inVoice ? 'in-voice' : 'left'}" data-category="active" data-is45="${is45 ? 'true' : 'false'}">
+              <td>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  ${m.avatar ? `<img src="${escapeHtml(m.avatar)}" style="width: 32px; height: 32px; border-radius: 50%;" alt="avatar">` : `<div style="width: 32px; height: 32px; border-radius: 50%; background: #3b82f6; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; color: #fff;">${escapeHtml((m.displayName || m.username || 'U')[0].toUpperCase())}</div>`}
+                  <div style="display: flex; flex-direction: column;">
+                    <strong style="color: #fff; font-size: 14px;">${escapeHtml(m.displayName || m.username)}</strong>
+                    <span style="color: #38bdf8; font-family: var(--font-mono); font-size: 12px;">@${escapeHtml(m.username)}</span>
+                  </div>
+                </div>
+              </td>
+              <td>
+                <div style="display: flex; flex-direction: column;">
+                  <strong style="color: #cbd5e1; font-size: 12.5px;">${escapeHtml(trackerData?.dateFormatted || '')}</strong>
+                  <span style="color: #38bdf8; font-size: 11px; font-weight: 600;">${escapeHtml(trackerData?.dayName || '')}</span>
+                </div>
+              </td>
+              <td>
+                <span class="${inVoice ? 'badge-running' : 'badge-stable'}">
+                  ${inVoice ? '🟢 In Voice' : '🔵 Joined Today'}
+                </span>
+              </td>
+              <td>
+                <div style="display: flex; flex-direction: column; gap: 2px;">
+                  <span style="color: #38bdf8; font-weight: 600; font-size: 12.5px;">🔊 ${escapeHtml(m.currentChannelName || 'Voice')}</span>
+                  ${m.currentServerName ? `<span class="badge-stable" style="font-size: 10px; width: fit-content; padding: 1px 6px;">${escapeHtml(m.currentServerName)}</span>` : ''}
+                </div>
+              </td>
+              <td style="font-family: var(--font-mono); color: #22c55e; font-weight: 600; font-size: 12.5px;">
+                ${escapeHtml(m.inTime)}
+              </td>
+              <td style="font-family: var(--font-mono); font-size: 12.5px; color: ${inVoice ? '#22c55e' : '#f43f5e'}; font-weight: 600;">
+                ${inVoice ? '<span class="chip-live">● Active Now</span>' : escapeHtml(m.outTime)}
+              </td>
+              <td style="font-family: var(--font-mono); font-size: 13px; color: #cbd5e1;">
+                ${m.currentSessionMinutes} mins
+              </td>
+              <td style="font-family: var(--font-mono); font-weight: 800; font-size: 15px; color: #38bdf8;">
+                ${m.totalDurationMinutes} mins
+              </td>
+              <td>
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                  ${hasRejoined ? `<span class="badge-rejoined" style="width: fit-content; margin-bottom: 2px;">🔁 Rejoined (${joinCount}x)</span>` : ''}
+                  <div class="session-timeline-list">
+                    ${(m.sessions || []).map((s, idx) => {
+                      const inT = s.joinedAt ? formatTimeOnly(s.joinedAt) : 'N/A';
+                      const outT = s.isActive ? '<span class="chip-live">Active</span>' : (s.leftAt ? formatTimeOnly(s.leftAt) : 'Left');
+                      return `
+                        <div class="session-timeline-chip ${s.isActive ? 'chip-active' : (idx > 0 ? 'chip-rejoined' : '')}">
+                          <span class="session-chip-badge ${idx > 0 ? 're-badge' : ''}">#${idx + 1}</span>
+                          <span class="session-chip-in">${inT}</span>
+                          <span class="session-chip-arrow">➔</span>
+                          <span class="session-chip-out">${outT}</span>
+                          <span class="session-chip-dur">(${s.durationMinutes || 0}m)</span>
+                        </div>
+                      `;
+                    }).join('')}
+                  </div>
+                </div>
+              </td>
+              <td>
+                ${is45 
+                  ? '<span class="badge-present">🏆 45m+ Met (+10 pts)</span>' 
+                  : (inVoice 
+                    ? `<span class="badge-running">⏳ ${m.totalDurationMinutes}/45m</span>` 
+                    : `<span class="badge-short">⚠️ Short (${m.totalDurationMinutes}m)</span>`)}
+              </td>
+            </tr>
+          `;
+          }).join('')}
+        </tbody>
+      </table>
+      ` : `
+        <div class="empty-notice-box">
+          ℹ No member voice sessions recorded for ${escapeHtml(fullLabel)}.
+        </div>
+      `}
+    </div>
+  </div>
+
+  <!-- Section 3: Live In & Out Event Feed -->
+  <div class="glass-card">
+    <div class="card-heading">
+      <span class="icon-blue">≡</span>
+      <span>Real-Time Voice Join & Leave Event Feed (Last ${recentEvents.length})</span>
+    </div>
+
+    ${recentEvents.length > 0 ? `
+      <div class="activity-timeline" style="margin-top: 14px;">
+        ${recentEvents.map(e => {
+          const isIn = (e.type === 'in');
+          const isSwitch = (e.type === 'switch');
+          const dotColor = isIn ? '#22c55e' : (isSwitch ? '#38bdf8' : '#f43f5e');
+          const icon = isIn ? '🟢' : (isSwitch ? '🔄' : '🔴');
+          const actionText = isIn 
+            ? `joined voice channel <strong style="color: #fff;">${escapeHtml(e.channelName)}</strong>` 
+            : (isSwitch 
+              ? `switched from <strong style="color: #94a3b8;">${escapeHtml(e.fromChannel)}</strong> to <strong style="color: #fff;">${escapeHtml(e.channelName)}</strong> (${e.durationMinutes}m in previous)` 
+              : `left voice channel <strong style="color: #fff;">${escapeHtml(e.channelName)}</strong> (Stayed <strong style="color: #38bdf8;">${e.durationMinutes} mins</strong>)`);
+
+          return `
+            <div class="activity-row">
+              <span class="activity-dot" style="background: ${dotColor};"></span>
+              <span class="activity-time" style="font-family: var(--font-mono);">${escapeHtml(e.timestampStr)}</span>
+              <span class="activity-text">
+                ${icon} <strong style="color: #38bdf8;">${escapeHtml(e.displayName)}</strong> (@${escapeHtml(e.username)}) ${actionText}
+                ${e.serverName ? `<span class="badge-stable" style="font-size: 10.5px; padding: 1px 6px; margin-left: 6px;">${escapeHtml(e.serverName)}</span>` : ''}
+              </span>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    ` : `
+      <div class="empty-notice-box">
+        ℹ No voice join or leave events recorded yet. Connect to a voice room to see events streamed live.
+      </div>
+    `}
+  </div>
+  `;
+}
+
+function attachMeetingTrackerPageEvents(trackerData, currentFilter = 'all', currentSearch = '') {
+  const dlBtn = $('#btn-download-meeting-csv');
+  if (dlBtn) {
+    dlBtn.onclick = () => {
+      downloadMeetingTrackerCsv(trackerData);
+    };
+  }
+
+  const resetTrackerBtn = $('#btn-reset-tracker');
+  if (resetTrackerBtn) {
+    resetTrackerBtn.onclick = async () => {
+      const confirmed = confirm('Reset voice tracker and start fresh today onwards?');
+      if (!confirmed) return;
+      try {
+        const res = await fetch('/api/meeting/tracker/reset', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          showToast('✅ Voice tracker reset! Fresh tracking started today.');
+          state.selectedTrackerDate = null;
+          await renderPage('meeting');
+        } else {
+          showToast('⚠️ Reset notice: ' + (data.error || 'Failed'));
+        }
+      } catch (err) {
+        showToast('❌ Reset error: ' + err.message);
+      }
+    };
+  }
+
+  // Day-by-Day Selector Tab Buttons
+  $$('.meeting-day-tab-btn').forEach(btn => {
+    btn.onclick = async () => {
+      const selectedDate = btn.dataset.date;
+      state.selectedTrackerDate = selectedDate;
+      try {
+        const updatedData = await api(`/api/meeting/tracker?date=${encodeURIComponent(selectedDate)}`);
+        $('#content').innerHTML = renderMeetingTrackerPage(updatedData, state.meetingFilter || 'all', state.meetingSearch || '');
+        attachMeetingTrackerPageEvents(updatedData, state.meetingFilter || 'all', state.meetingSearch || '');
+      } catch (err) {
+        showToast('⚠️ Failed to load meeting tracker for selected day');
+      }
+    };
+  });
+
+  const searchInput = $('#meeting-search');
+  if (searchInput) {
+    if (currentSearch) searchInput.value = currentSearch;
+    searchInput.oninput = e => {
+      state.meetingSearch = e.target.value.toLowerCase().trim();
+      applyMeetingFilters();
+    };
+  }
+
+  $$('.meeting-filter-btn').forEach(btn => {
+    btn.onclick = () => {
+      $$('.meeting-filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.meetingFilter = btn.dataset.filter;
+      applyMeetingFilters();
+    };
+  });
+
+  function applyMeetingFilters() {
+    const q = (state.meetingSearch || '').toLowerCase();
+    const filter = state.meetingFilter || 'all';
+
+    $$('#meeting-tracker-tbody tr').forEach(row => {
+      const text = row.textContent.toLowerCase();
+      const status = row.dataset.status || '';
+      const category = row.dataset.category || '';
+      const is45 = row.dataset.is45 === 'true';
+
+      const matchesSearch = !q || text.includes(q);
+      let matchesFilter = true;
+      if (filter === 'active-live') matchesFilter = (status === 'in-voice');
+      else if (filter === 'active') matchesFilter = (category === 'active' || status === 'in-voice' || status === 'left');
+      else if (filter === 'non-active') matchesFilter = (category === 'non-active' || status === 'non-active');
+      else if (filter === 'left') matchesFilter = (status === 'left');
+      else if (filter === '45m') matchesFilter = is45;
+
+      row.style.display = (matchesSearch && matchesFilter) ? '' : 'none';
+    });
+  }
+
+  if (currentFilter && currentFilter !== 'all') {
+    state.meetingFilter = currentFilter;
+    const targetBtn = $(`[data-filter="${currentFilter}"]`);
+    if (targetBtn) {
+      $$('.meeting-filter-btn').forEach(b => b.classList.remove('active'));
+      targetBtn.classList.add('active');
+    }
+  }
+  applyMeetingFilters();
 }
 
 function renderGenericPage(title, subtitle, description) {
@@ -1034,6 +1909,7 @@ async function renderPage(page) {
     commands: ['APPLICATION COMMANDS', 'Commands', 'Explore and manage Discord slash commands.'],
     moderation: ['CLAN DISCIPLINE & RULES', 'Moderation', 'Role checks, basher permissions, and clan moderation.'],
     ai: ['AI & VOICE INTERACTION', 'Blix AI', 'Groq intelligence engine, Tanglish persona, and speech pipeline.'],
+    meeting: ['LIVE MEETING TRACKER', 'Meeting Voice Tracker', 'Always-on voice tracking: monitor member join/leave times, in-and-out minutes, and active sessions.'],
     gatherings: ['DAILY BASH & SCHEDULE', 'Daily Gatherings', 'Daily Common Hall meeting scheduler and reminders.'],
     attendance: ['ATTENDANCE TRACKING', 'Attendance', 'Meeting voice presence and 45-minute verification metrics.'],
     reports: ['ANALYTICS & METRICS', 'Reports & Analytics', 'Weekly progress, leaderboard, and activity reports.'],
@@ -1089,12 +1965,31 @@ async function renderPage(page) {
       return;
     }
 
+    if (page === 'meeting') {
+      try {
+        const query = state.selectedTrackerDate ? `?date=${encodeURIComponent(state.selectedTrackerDate)}` : '';
+        const trackerData = await api(`/api/meeting/tracker${query}`);
+        $('#content').innerHTML = renderMeetingTrackerPage(trackerData);
+        attachMeetingTrackerPageEvents(trackerData);
+      } catch (e) {
+        console.error('Error loading meeting tracker:', e);
+        const fallback = { stats: { activeVoiceCount: 0, totalTrackedCount: 0, totalVoiceMinutes: 0, qualified45Count: 0 }, members: [], liveMembers: [], recentEvents: [] };
+        $('#content').innerHTML = renderMeetingTrackerPage(fallback);
+        attachMeetingTrackerPageEvents(fallback);
+      }
+      return;
+    }
+
     if (page === 'gatherings') {
       try {
-        const gData = await api('/api/gatherings');
+        const query = state.selectedGatheringDate ? `?date=${encodeURIComponent(state.selectedGatheringDate)}` : '';
+        const gData = await api(`/api/gatherings${query}`);
         $('#content').innerHTML = renderGatheringsPage(gData);
+        attachGatheringsPageEvents(gData);
       } catch (e) {
-        $('#content').innerHTML = renderGatheringsPage({ gathering: d.gathering, recentMeeting: d.analytics?.history?.[0] });
+        const fallbackGathering = { gathering: d.gathering, recentMeeting: d.analytics?.history?.[0] };
+        $('#content').innerHTML = renderGatheringsPage(fallbackGathering);
+        attachGatheringsPageEvents(fallbackGathering);
       }
       return;
     }
@@ -1112,6 +2007,18 @@ async function renderPage(page) {
       return;
     }
 
+    if (page === 'reports') {
+      try {
+        const repData = await api('/api/reports/weekly?days=7');
+        $('#content').innerHTML = renderReportsPage(repData);
+        attachReportsPageEvents(repData);
+      } catch (e) {
+        $('#content').innerHTML = renderReportsPage({ totalMeetings: 0, memberSummaries: [] });
+        attachReportsPageEvents({ totalMeetings: 0, memberSummaries: [] });
+      }
+      return;
+    }
+
     if (page === 'logs') {
       $('#content').innerHTML = `
         <div class="glass-card">
@@ -1125,11 +2032,11 @@ async function renderPage(page) {
 
     // Generic fallback for remaining pages
     const genericContent = {
-      server: ['Connected to Belmonts Discord Server', `Guild ID: ${d.servers?.[0]?.id || '1163423719910281276'}. Total members: ${d.totals?.discordMembers || 28}. All voice channels and text channels are synchronized.`],
+      server: ['Connected to Belmonts Discord Server', `Guild: ${d.servers?.[0]?.name || 'Belmonts'}. Total members: ${d.totals?.discordMembers || 0}. Voice and text channels synchronized.`],
       moderation: ['Basher Role Permission Enforcement', 'Basher role verification is active across all slash commands and gathering attendance modules.'],
-      gatherings: ['Daily Common Hall Gathering Scheduler', `Status: ${d.gathering?.isActive ? 'Active gathering in progress' : 'Scheduled at 8:00 PM IST'}. Voice channel tracking with 45-minute minimum attendance rule.`],
-      attendance: ['Voice Attendance Tracking', `Tracked ${d.analytics?.totalMeetings || 24} clan gatherings. Minimum 45-minute continuous voice presence required for attendance credit.`],
-      reports: ['Clan Progress & Leaderboard', `Total registered members: ${d.totals?.registeredMembers || 20}. Weekly VibeCode summaries and points synchronization active.`],
+      gatherings: ['Daily Common Hall Gathering Scheduler', `Status: ${d.gathering?.isActive ? 'Active gathering in progress' : 'Scheduled daily'}. Voice channel tracking with 45-minute minimum attendance rule.`],
+      attendance: ['Voice Attendance Tracking', `Tracked ${d.analytics?.totalMeetings || 0} clan gatherings. Minimum 45-minute continuous voice presence required for attendance credit.`],
+      reports: ['Clan Progress & Leaderboard', `Total registered members: ${d.totals?.registeredMembers || 0}. Weekly VibeCode summaries and points synchronization active.`],
       integrations: ['Connected External APIs', 'Discord Gateway: Connected via Discord.js v14. Supabase DB: Connected. Groq AI: Connected.'],
       settings: ['Control Panel Settings', 'Dashboard Admin Token: Configured. Dark Glassmorphic Theme: Active. Port: 3000.']
     };
@@ -1202,7 +2109,7 @@ $('#admin-btn').onclick = () => {
   showToast('Logged in as Administrator');
 };
 
-// Periodic background polling (every 6 seconds) to keep metrics live
+// Periodic background polling (every 4 seconds) to keep metrics live
 function startPolling() {
   if (state.pollTimer) clearInterval(state.pollTimer);
   state.pollTimer = setInterval(async () => {
@@ -1214,11 +2121,21 @@ function startPolling() {
         const uptimeText = formatDuration(d.bot?.uptimeSeconds);
         const uptimeEl = $('.uptime-value');
         if (uptimeEl) uptimeEl.textContent = uptimeText;
+      } else if (state.activePage === 'meeting') {
+        const query = state.selectedTrackerDate ? `?date=${encodeURIComponent(state.selectedTrackerDate)}` : '';
+        const trackerData = await api(`/api/meeting/tracker${query}`);
+        if (state.activePage === 'meeting') {
+          const currentSearch = $('#meeting-search') ? $('#meeting-search').value : (state.meetingSearch || '');
+          const activeFilterBtn = $('.meeting-filter-btn.active');
+          const currentFilter = activeFilterBtn ? activeFilterBtn.dataset.filter : (state.meetingFilter || 'all');
+          $('#content').innerHTML = renderMeetingTrackerPage(trackerData, currentFilter, currentSearch);
+          attachMeetingTrackerPageEvents(trackerData, currentFilter, currentSearch);
+        }
       }
     } catch (e) {
       // Background poll failure is silent
     }
-  }, 6000);
+  }, 4000);
 }
 
 // Initial Boot

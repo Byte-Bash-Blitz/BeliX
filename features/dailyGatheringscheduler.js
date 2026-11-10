@@ -13,14 +13,40 @@ const {
     getActiveMeeting,
     awardMeetingPoints,
     getMember,
+    getAllMembers,
 } = require('../database/db');
 
-// Channel IDs
+// Channel IDs (Primary Belmonts Server)
 const TINKERING_CHANNEL_ID = process.env.tinkering || '1361235736774447247';
 const COMMON_HALL_CHANNEL_ID = process.env['common-hall'] || '1304848106789015647';
 const REPORTS_CHANNEL_ID = '1475575831601610862';
 const VOICE_ROOM_ID = process.env['voiceroom-Common-hall'] || '1304848107095326830';
 const BELMONTS_ROLE_ID = '1307057022453153813';
+
+// Additional Server Configuration (Byte-Bash-Blitz / Other Server Workspace)
+const OTHER_CATEGORY_ID = process.env.OTHER_CATEGORY_ID || '1497643694214352989';
+const OTHER_VOICE_ROOM_ID = process.env.OTHER_VOICE_ROOM_ID || '1497644587974394087';
+const OTHER_TEXT_CHANNEL_ID = process.env.OTHER_TEXT_CHANNEL_ID || '1497644633390579914';
+
+const BELMONTS_GUILD_ID = process.env.GUILD_ID || '1304848105975578634';
+const MEETING_DURATION_MS = 60 * 60 * 1000; // 1 hour meeting duration as specified
+
+function isGatheringVoiceChannel(channel) {
+    if (!channel) return false;
+    const chId = typeof channel === 'string' ? channel : channel.id;
+    const guildId = channel.guild?.id || channel.guildId;
+
+    // Primary Belmonts server (1304848105975578634): trace member in all voice channels!
+    if (guildId === BELMONTS_GUILD_ID) {
+        if (typeof channel === 'object') {
+            return Boolean(channel.isVoiceBased?.() || channel.type === 2);
+        }
+        return true;
+    }
+
+    // For another server: ONLY track the specific channel ID given by the user (1497644587974394087), not others!
+    return chId === OTHER_VOICE_ROOM_ID;
+}
 
 /**
  * Helper to get a channel by ID, checking cache first and fetching from API if not cached
@@ -50,83 +76,699 @@ const gatheringSession = {
     liveTimeout: null,
 };
 
+// Always-On Voice Activity & Meeting Tracker Store
+const voiceActivityTracker = {
+    attendees: new Map(), // userId -> { userId, username, displayName, avatar, currentJoinAt, currentChannelId, currentChannelName, currentServerName, sessions: [] }
+    events: [],           // Recent chronological in/out/switch event log
+};
+
+function getAllTrackedVoiceChannels(client) {
+    if (!client) return [];
+    const channels = [];
+    try {
+        const belmonts = client.guilds.cache.get(BELMONTS_GUILD_ID);
+        if (belmonts) {
+            belmonts.channels.cache.forEach(ch => {
+                if (ch.isVoiceBased?.() || ch.type === 2) {
+                    channels.push(ch);
+                }
+            });
+        }
+        const otherChannel = client.channels.cache.get(OTHER_VOICE_ROOM_ID);
+        if (otherChannel && (otherChannel.isVoiceBased?.() || otherChannel.type === 2)) {
+            channels.push(otherChannel);
+        }
+    } catch (e) {
+        console.warn('getAllTrackedVoiceChannels warning:', e.message);
+    }
+    return channels;
+}
+
+function addTrackerEvent(evt) {
+    voiceActivityTracker.events.unshift({
+        id: `evt_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        ...evt,
+    });
+    if (voiceActivityTracker.events.length > 100) {
+        voiceActivityTracker.events.pop();
+    }
+}
+
+/**
+ * Automatically purges older sessions from in-memory tracker so prior days
+ * never linger in memory or combine with today's real-time voice sessions.
+ */
+function pruneOlderVoiceSessions(targetDateStr = null) {
+    const todayStr = targetDateStr || getDateStrInIST(new Date());
+    if (!todayStr) return;
+
+    for (const [userId, attendee] of voiceActivityTracker.attendees.entries()) {
+        attendee.sessions = (attendee.sessions || []).filter(s => {
+            if (!s.joinedAt) return false;
+            return getDateStrInIST(s.joinedAt) === todayStr;
+        });
+
+        // If member is not currently in voice and has no sessions today, remove them from memory
+        if (!attendee.currentJoinAt && attendee.sessions.length === 0) {
+            voiceActivityTracker.attendees.delete(userId);
+        }
+    }
+
+    voiceActivityTracker.events = (voiceActivityTracker.events || []).filter(e => {
+        if (!e.timestamp) return false;
+        return getDateStrInIST(e.timestamp) === todayStr;
+    });
+}
+
+function scanInitialVoiceStates(client) {
+    if (!client) return;
+    try {
+        const now = new Date();
+        const trackedChannels = getAllTrackedVoiceChannels(client);
+        trackedChannels.forEach(channel => {
+            if (!channel.members) return;
+            channel.members.filter(m => !m.user.bot).forEach(m => {
+                const joinTime = m.voice?.joinedAt || now;
+                let attendee = voiceActivityTracker.attendees.get(m.id);
+                if (!attendee) {
+                    attendee = {
+                        userId: m.id,
+                        username: m.user.username,
+                        displayName: m.displayName || m.user.username,
+                        avatar: m.user.displayAvatarURL ? m.user.displayAvatarURL({ size: 64 }) : null,
+                        currentJoinAt: joinTime,
+                        currentChannelId: channel.id,
+                        currentChannelName: channel.name,
+                        currentServerName: channel.guild?.name || 'Belmonts',
+                        sessions: [],
+                    };
+                    voiceActivityTracker.attendees.set(m.id, attendee);
+                } else if (!attendee.currentJoinAt) {
+                    attendee.currentJoinAt = joinTime;
+                    attendee.currentChannelId = channel.id;
+                    attendee.currentChannelName = channel.name;
+                    attendee.currentServerName = channel.guild?.name || 'Belmonts';
+                }
+            });
+        });
+    } catch (err) {
+        console.warn('Initial voice scan notice:', err.message);
+    }
+}
+
 const TIME_PROMPT_HOUR = 19 //7 pm
 const TIME_PROMPT_MINUTE = 0 // 0 mins
 
-function getGatheringSnapshot(client = null) {
-    let liveVoiceMembers = [];
-    if (client) {
+/**
+ * Date & Timezone Helpers (Asia/Kolkata) for Day-by-Day Partitioning
+ */
+function getDateStrInIST(date = new Date()) {
+    if (!date) return '';
+    try {
+        const d = (date instanceof Date) ? date : new Date(date);
+        if (isNaN(d.getTime())) return '';
+        return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d);
+    } catch (e) {
+        return '';
+    }
+}
+
+function getDayAndDateInfo(date = new Date()) {
+    try {
+        const d = (date instanceof Date && !isNaN(date)) ? date : new Date(date);
+        const dateStr = getDateStrInIST(d);
+        const dayName = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long' }).format(d);
+        const dateFormatted = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', year: 'numeric' }).format(d);
+        return {
+            dateStr,
+            dayName,
+            dateFormatted,
+            fullLabel: `${dayName}, ${dateFormatted}`,
+        };
+    } catch (e) {
+        const fallback = new Date().toISOString().split('T')[0];
+        return { dateStr: fallback, dayName: 'Day', dateFormatted: fallback, fullLabel: fallback };
+    }
+}
+
+function getAvailableMeetingDays() {
+    const todayStr = getDateStrInIST(new Date());
+    const dateSet = new Set(todayStr ? [todayStr] : []);
+
+    for (const att of voiceActivityTracker.attendees.values()) {
+        (att.sessions || []).forEach(s => {
+            if (s.joinedAt) {
+                const ds = getDateStrInIST(s.joinedAt);
+                if (ds) dateSet.add(ds);
+            }
+        });
+        if (att.currentJoinAt) {
+            const ds = getDateStrInIST(att.currentJoinAt);
+            if (ds) dateSet.add(ds);
+        }
+    }
+    dateSet.delete('');
+
+    const sortedDates = Array.from(dateSet).sort().reverse();
+    return sortedDates.map(dateStr => {
         try {
-            const voiceChannel = client.channels.cache.get(VOICE_ROOM_ID);
-            if (voiceChannel && voiceChannel.members) {
-                liveVoiceMembers = Array.from(voiceChannel.members.values())
-                    .filter(m => !m.user.bot)
-                    .map(m => ({
-                        userId: m.id,
-                        displayName: m.displayName || m.user.username,
-                        username: m.user.username,
-                        joinedAt: m.voice?.joinedAt ? m.voice.joinedAt.toISOString() : new Date().toISOString(),
-                        avatar: m.user.displayAvatarURL ? m.user.displayAvatarURL({ size: 64 }) : null,
-                    }));
+            const [y, m, d] = dateStr.split('-').map(Number);
+            const refDate = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+            const dayInfo = getDayAndDateInfo(refDate);
+            return {
+                dateStr,
+                dayName: dayInfo.dayName,
+                dateFormatted: dayInfo.dateFormatted,
+                fullLabel: dayInfo.fullLabel,
+                isToday: dateStr === todayStr,
+            };
+        } catch (e) {
+            return {
+                dateStr,
+                dayName: 'Day',
+                dateFormatted: dateStr,
+                fullLabel: dateStr,
+                isToday: dateStr === todayStr,
+            };
+        }
+    });
+}
+
+function getGatheringSnapshot(client = null, targetDate = null) {
+    const todayStr = getDateStrInIST(new Date());
+    const queryDateStr = targetDate || todayStr;
+    const isToday = (queryDateStr === todayStr);
+
+    if (isToday) {
+        pruneOlderVoiceSessions(todayStr);
+    }
+
+    let dayInfo;
+    try {
+        const [y, m, d] = queryDateStr.split('-').map(Number);
+        const refDate = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+        dayInfo = getDayAndDateInfo(refDate);
+    } catch (e) {
+        dayInfo = getDayAndDateInfo(new Date());
+    }
+
+    let liveVoiceMembers = [];
+    if (client && isToday) {
+        try {
+            const seenUsers = new Set();
+
+            // 1. Belmonts server: scan all voice channels
+            const belmontsGuild = client.guilds.cache.get(BELMONTS_GUILD_ID);
+            if (belmontsGuild) {
+                belmontsGuild.channels.cache.forEach(channel => {
+                    if ((channel.isVoiceBased?.() || channel.type === 2) && channel.members) {
+                        channel.members.filter(m => !m.user.bot).forEach(m => {
+                            if (!seenUsers.has(m.id)) {
+                                seenUsers.add(m.id);
+                                liveVoiceMembers.push({
+                                    userId: m.id,
+                                    displayName: m.displayName || m.user.username,
+                                    username: m.user.username,
+                                    channelName: channel.name,
+                                    serverName: belmontsGuild.name,
+                                    joinedAt: m.voice?.joinedAt ? m.voice.joinedAt.toISOString() : new Date().toISOString(),
+                                    avatar: m.user.displayAvatarURL ? m.user.displayAvatarURL({ size: 64 }) : null,
+                                });
+                            }
+                        });
+                    }
+                });
+            } else {
+                const voiceChannel = client.channels.cache.get(VOICE_ROOM_ID);
+                if (voiceChannel && voiceChannel.members) {
+                    voiceChannel.members.filter(m => !m.user.bot).forEach(m => {
+                        if (!seenUsers.has(m.id)) {
+                            seenUsers.add(m.id);
+                            liveVoiceMembers.push({
+                                userId: m.id,
+                                displayName: m.displayName || m.user.username,
+                                username: m.user.username,
+                                channelName: voiceChannel.name,
+                                serverName: voiceChannel.guild?.name || 'Belmonts',
+                                joinedAt: m.voice?.joinedAt ? m.voice.joinedAt.toISOString() : new Date().toISOString(),
+                                avatar: m.user.displayAvatarURL ? m.user.displayAvatarURL({ size: 64 }) : null,
+                            });
+                        }
+                    });
+                }
+            }
+
+            // 2. Another server: track ONLY the specific channel ID given by the user (1497644587974394087)
+            const otherVoiceChannel = client.channels.cache.get(OTHER_VOICE_ROOM_ID);
+            if (otherVoiceChannel && otherVoiceChannel.members) {
+                otherVoiceChannel.members.filter(m => !m.user.bot).forEach(m => {
+                    if (!seenUsers.has(m.id)) {
+                        seenUsers.add(m.id);
+                        liveVoiceMembers.push({
+                            userId: m.id,
+                            displayName: m.displayName || m.user.username,
+                            username: m.user.username,
+                            channelName: otherVoiceChannel.name,
+                            serverName: otherVoiceChannel.guild?.name || 'Other Server',
+                            joinedAt: m.voice?.joinedAt ? m.voice.joinedAt.toISOString() : new Date().toISOString(),
+                            avatar: m.user.displayAvatarURL ? m.user.displayAvatarURL({ size: 64 }) : null,
+                        });
+                    }
+                });
             }
         } catch (err) {
             console.warn('Could not read voiceChannel members for snapshot:', err.message);
         }
     }
 
-    const participants = Array.from(gatheringSession.attendees.entries()).map(([userId, attendee]) => {
-        const totalSessionMs = (attendee.sessions || []).reduce((acc, s) => {
-            const end = s.leftAt ? s.leftAt.getTime() : Date.now();
-            return acc + Math.max(0, end - s.joinedAt.getTime());
-        }, 0);
-        const liveMs = attendee.currentJoinAt ? Math.max(0, Date.now() - attendee.currentJoinAt.getTime()) : 0;
-        const totalDurationMinutes = Math.floor((totalSessionMs + liveMs) / 60000);
+    const sourceAttendees = (gatheringSession.isActive && isToday && gatheringSession.attendees.size > 0)
+        ? gatheringSession.attendees 
+        : voiceActivityTracker.attendees;
 
-        // Map individual session intervals (entries and exits)
-        const sessions = (attendee.sessions || []).map((s, idx) => ({
-            sessionNumber: idx + 1,
-            joinedAt: s.joinedAt ? s.joinedAt.toISOString() : null,
-            leftAt: s.leftAt ? s.leftAt.toISOString() : null,
-            durationMinutes: s.leftAt ? Math.round((s.leftAt.getTime() - s.joinedAt.getTime()) / 60000) : 0,
-            isActive: false,
-        }));
+    const participants = [];
 
-        if (attendee.currentJoinAt) {
-            const currentDurMin = Math.round((Date.now() - attendee.currentJoinAt.getTime()) / 60000);
-            sessions.push({
-                sessionNumber: sessions.length + 1,
-                joinedAt: attendee.currentJoinAt.toISOString(),
-                leftAt: null,
-                durationMinutes: currentDurMin,
-                isActive: true,
-            });
+    for (const [userId, attendee] of sourceAttendees.entries()) {
+        // STRICT DAY-BY-DAY FILTER: strictly filter sessions that occurred on queryDateStr!
+        const dayPastSessions = (attendee.sessions || []).filter(s => {
+            if (!s.joinedAt) return false;
+            return getDateStrInIST(s.joinedAt) === queryDateStr;
+        });
+
+        let liveSession = null;
+        if (isToday && attendee.currentJoinAt) {
+            const joinDate = attendee.currentJoinAt instanceof Date ? attendee.currentJoinAt : new Date(attendee.currentJoinAt);
+            if (getDateStrInIST(joinDate) === queryDateStr) {
+                const currentDurMin = Math.max(0, Math.round((Date.now() - joinDate.getTime()) / 60000));
+                liveSession = {
+                    joinedAt: joinDate.toISOString(),
+                    leftAt: null,
+                    durationMinutes: currentDurMin,
+                    channelName: attendee.currentChannelName || 'Voice Room',
+                    serverName: attendee.currentServerName || 'Belmonts',
+                    isActive: true,
+                };
+            }
         }
 
-        return {
+        const mappedPastSessions = dayPastSessions.map((s, idx) => {
+            const jDate = s.joinedAt instanceof Date ? s.joinedAt : new Date(s.joinedAt);
+            const lDate = s.leftAt ? (s.leftAt instanceof Date ? s.leftAt : new Date(s.leftAt)) : null;
+            return {
+                sessionNumber: idx + 1,
+                joinedAt: jDate ? jDate.toISOString() : null,
+                leftAt: lDate ? lDate.toISOString() : null,
+                durationMinutes: s.durationMinutes !== undefined ? s.durationMinutes : (lDate ? Math.round((lDate.getTime() - jDate.getTime()) / 60000) : 0),
+                channelName: s.channelName || 'Voice Room',
+                serverName: s.serverName || 'Belmonts',
+                isActive: false,
+            };
+        });
+
+        const allDaySessions = liveSession ? [...mappedPastSessions, { ...liveSession, sessionNumber: mappedPastSessions.length + 1 }] : mappedPastSessions;
+
+        // If member had no voice activity on queryDateStr, they are absent for this day!
+        if (allDaySessions.length === 0) continue;
+
+        const totalDurationMinutes = allDaySessions.reduce((sum, s) => sum + (s.durationMinutes || 0), 0);
+        const isEligible45 = totalDurationMinutes >= 45;
+        const firstSession = allDaySessions[0];
+        const lastSession = allDaySessions[allDaySessions.length - 1];
+
+        participants.push({
             userId,
             displayName: attendee.displayName,
             username: attendee.username,
-            active: Boolean(attendee.currentJoinAt),
-            joinedAt: attendee.currentJoinAt?.toISOString() || attendee.sessions?.[0]?.joinedAt?.toISOString() || null,
-            firstJoinedAt: sessions[0]?.joinedAt || null,
-            lastLeftAt: attendee.currentJoinAt ? null : (sessions[sessions.length - 1]?.leftAt || null),
+            avatar: attendee.avatar || null,
+            active: Boolean(isToday && attendee.currentJoinAt),
+            joinedAt: firstSession?.joinedAt || null,
+            firstJoinedAt: firstSession?.joinedAt || null,
+            lastLeftAt: (isToday && attendee.currentJoinAt) ? null : (lastSession?.leftAt || null),
             totalDurationMinutes,
-            isEligible45: totalDurationMinutes >= 45,
-            status: Boolean(attendee.currentJoinAt) ? 'In Voice' : 'Left',
-            sessions,
-            joinCount: Math.max(1, sessions.length),
-            isRejoined: sessions.length > 1,
-        };
+            isEligible45,
+            status: (isToday && attendee.currentJoinAt) ? 'In Voice' : 'Left',
+            sessions: allDaySessions,
+            joinCount: allDaySessions.length,
+            isRejoined: allDaySessions.length > 1,
+            dateStr: queryDateStr,
+            dayName: dayInfo.dayName,
+            dateFormatted: dayInfo.dateFormatted,
+        });
+    }
+
+    // Sort participants: currently in voice first, then by duration descending
+    participants.sort((a, b) => {
+        if (a.active && !b.active) return -1;
+        if (!a.active && b.active) return 1;
+        return b.totalDurationMinutes - a.totalDurationMinutes;
     });
 
+    const baseRoster = getClanProfilesSync();
+    const matchedKeys = new Set();
+    participants.forEach(p => {
+        const pUid = String(p.userId);
+        const pUser = (p.username || '').toLowerCase();
+        const pDisp = (p.displayName || '').toLowerCase();
+        const m = baseRoster.find(r => 
+            (r.discordId && r.discordId === pUid) ||
+            (r.username && r.username.toLowerCase() === pUser) ||
+            (r.displayName && r.displayName.toLowerCase() === pDisp)
+        );
+        if (m) {
+            matchedKeys.add(String(m.id));
+            if (m.discordId) matchedKeys.add(String(m.discordId));
+            if (m.username) matchedKeys.add(m.username.toLowerCase());
+            if (m.displayName) matchedKeys.add(m.displayName.toLowerCase());
+        }
+    });
+
+    const nonActiveClanMembers = baseRoster.filter(r => 
+        !matchedKeys.has(String(r.id)) &&
+        (!r.discordId || !matchedKeys.has(String(r.discordId))) &&
+        (!r.username || !matchedKeys.has(r.username.toLowerCase())) &&
+        (!r.displayName || !matchedKeys.has(r.displayName.toLowerCase()))
+    ).map(r => ({
+        displayName: r.displayName || r.name,
+        username: r.username || 'unlinked',
+        status: 'Absent / Not Joined',
+        totalDurationMinutes: 0,
+        isEligible45: false,
+        role: r.team || 'Belmonts Member',
+        dateStr: queryDateStr,
+        dayName: dayInfo.dayName,
+    }));
+
+    const availableDays = getAvailableMeetingDays();
+
     return {
-        isActive: gatheringSession.isActive,
+        isActive: gatheringSession.isActive && isToday,
         meetingId: gatheringSession.meetingId,
+        selectedDate: queryDateStr,
+        dayName: dayInfo.dayName,
+        dateFormatted: dayInfo.dateFormatted,
+        fullLabel: dayInfo.fullLabel,
+        isToday,
+        availableDays,
         startTime: gatheringSession.startTime?.toISOString() || null,
         participantCount: participants.length,
+        clanRosterCount: baseRoster.length,
         participants,
+        activeParticipants: participants,
+        nonActiveMembers: nonActiveClanMembers,
         liveVoiceMembers,
         voiceRoomId: VOICE_ROOM_ID,
+    };
+}
+
+/**
+ * Synchronous profile reader for fast snapshot lookups
+ */
+function getClanProfilesSync() {
+    try {
+        const profiles = require('../database/memberProfiles.json');
+        if (Array.isArray(profiles)) {
+            return profiles.map(p => ({
+                id: p.discordId ? String(p.discordId) : String(p.memberId),
+                discordId: p.discordId ? String(p.discordId) : null,
+                username: p.discordUsername || null,
+                displayName: p.fullName,
+                name: p.fullName,
+                team: p.clanDesignation || p.team || 'Belmonts Member',
+            }));
+        }
+    } catch (e) {}
+    return [];
+}
+
+/**
+ * Complete dynamic clan roster resolver from Supabase and local profiles
+ */
+async function getFullClanRoster() {
+    let roster = [];
+    try {
+        const dbMembers = await getAllMembers();
+        if (dbMembers && dbMembers.length > 0) {
+            roster = dbMembers.map(m => ({
+                id: m.members_discord_id ? String(m.members_discord_id) : String(m.member_id),
+                discordId: m.members_discord_id ? String(m.members_discord_id) : null,
+                username: m.discord_username || null,
+                displayName: m.display_name || m.name,
+                name: m.name,
+                team: m.clan_role || m.team || 'Belmonts Member',
+            }));
+        }
+    } catch (e) {
+        // Fallback below
+    }
+
+    const staticProfiles = getClanProfilesSync();
+    staticProfiles.forEach(p => {
+        const already = roster.some(r => 
+            (p.discordId && r.discordId && String(r.discordId) === String(p.discordId)) ||
+            (p.username && r.username && r.username.toLowerCase() === p.username.toLowerCase()) ||
+            (p.displayName && r.displayName && r.displayName.toLowerCase() === p.displayName.toLowerCase())
+        );
+        if (!already) {
+            roster.push(p);
+        }
+    });
+
+    return roster;
+}
+
+/**
+ * Get comprehensive Always-On Meeting Voice Tracker data with Active and Non-Active member visibility
+ */
+/**
+ * Get comprehensive Always-On Meeting Voice Tracker data partitioned strictly day-by-day
+ */
+async function getMeetingTrackerData(client = null, targetDate = null) {
+    const now = new Date();
+    const todayStr = getDateStrInIST(now);
+    const queryDateStr = targetDate || todayStr;
+    const isToday = (queryDateStr === todayStr);
+
+    if (isToday) {
+        pruneOlderVoiceSessions(todayStr);
+    }
+
+    let dayInfo;
+    try {
+        const [y, m, d] = queryDateStr.split('-').map(Number);
+        const refDate = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+        dayInfo = getDayAndDateInfo(refDate);
+    } catch (e) {
+        dayInfo = getDayAndDateInfo(now);
+    }
+
+    if (client && isToday) {
+        scanInitialVoiceStates(client);
+    }
+
+    const clanRoster = await getFullClanRoster();
+    const matchedRosterKeys = new Set();
+    const activeMembers = [];
+    let totalVoiceMinutes = 0;
+    let activeVoiceCount = 0;
+    let qualified45Count = 0;
+
+    for (const [userId, att] of voiceActivityTracker.attendees.entries()) {
+        const isCurrentlyActive = Boolean(isToday && att.currentJoinAt);
+        if (isCurrentlyActive) activeVoiceCount++;
+
+        // STRICT DAY-BY-DAY FILTER: only include sessions belonging to queryDateStr!
+        const dayPastSessions = (att.sessions || []).filter(s => {
+            if (!s.joinedAt) return false;
+            return getDateStrInIST(s.joinedAt) === queryDateStr;
+        });
+
+        let liveSession = null;
+        let ongoingMinutes = 0;
+        if (isToday && att.currentJoinAt) {
+            const joinDate = att.currentJoinAt instanceof Date ? att.currentJoinAt : new Date(att.currentJoinAt);
+            if (getDateStrInIST(joinDate) === queryDateStr) {
+                ongoingMinutes = Math.max(0, Math.floor((now.getTime() - joinDate.getTime()) / 60000));
+                liveSession = {
+                    joinedAt: joinDate.toISOString(),
+                    leftAt: null,
+                    durationMinutes: ongoingMinutes,
+                    channelName: att.currentChannelName || 'Voice Room',
+                    serverName: att.currentServerName || 'Belmonts',
+                    isActive: true,
+                };
+            }
+        }
+
+        const mappedPastSessions = dayPastSessions.map((s, idx) => {
+            const jDate = s.joinedAt instanceof Date ? s.joinedAt : new Date(s.joinedAt);
+            const lDate = s.leftAt ? (s.leftAt instanceof Date ? s.leftAt : new Date(s.leftAt)) : null;
+            return {
+                sessionNumber: idx + 1,
+                joinedAt: jDate ? jDate.toISOString() : null,
+                leftAt: lDate ? lDate.toISOString() : null,
+                durationMinutes: s.durationMinutes !== undefined ? s.durationMinutes : (lDate ? Math.max(0, Math.floor((lDate.getTime() - jDate.getTime()) / 60000)) : 0),
+                channelName: s.channelName || 'Voice Room',
+                serverName: s.serverName || 'Belmonts',
+                isActive: false,
+            };
+        });
+
+        const allDaySessions = liveSession ? [...mappedPastSessions, { ...liveSession, sessionNumber: mappedPastSessions.length + 1 }] : mappedPastSessions;
+
+        // If member had no voice activity on this date, skip from active list
+        if (allDaySessions.length === 0) continue;
+
+        const totalDurationMinutes = allDaySessions.reduce((sum, s) => sum + (s.durationMinutes || 0), 0);
+        totalVoiceMinutes += totalDurationMinutes;
+
+        const isEligible45 = totalDurationMinutes >= 45;
+        if (isEligible45) qualified45Count++;
+
+        const firstSession = allDaySessions[0];
+        const lastSession = allDaySessions[allDaySessions.length - 1];
+
+        const inTimeStr = firstSession?.joinedAt 
+            ? new Date(firstSession.joinedAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' }) 
+            : 'N/A';
+        const outTimeStr = isCurrentlyActive 
+            ? 'Active Now' 
+            : (lastSession?.leftAt ? new Date(lastSession.leftAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' }) : 'Left');
+
+        // Match with clan roster
+        const uIdStr = String(userId);
+        const uName = (att.username || '').toLowerCase();
+        const dName = (att.displayName || '').toLowerCase();
+        const matchedRosterMember = clanRoster.find(r => 
+            (r.discordId && String(r.discordId) === uIdStr) ||
+            (r.username && r.username.toLowerCase() === uName) ||
+            (r.displayName && r.displayName.toLowerCase() === dName) ||
+            (r.name && r.name.toLowerCase() === dName)
+        );
+        if (matchedRosterMember) {
+            matchedRosterKeys.add(String(matchedRosterMember.id));
+            if (matchedRosterMember.discordId) matchedRosterKeys.add(String(matchedRosterMember.discordId));
+            if (matchedRosterMember.username) matchedRosterKeys.add(matchedRosterMember.username.toLowerCase());
+            if (matchedRosterMember.displayName) matchedRosterKeys.add(matchedRosterMember.displayName.toLowerCase());
+        }
+
+        activeMembers.push({
+            userId,
+            displayName: att.displayName || matchedRosterMember?.displayName || att.username || 'Member',
+            username: att.username || matchedRosterMember?.username || 'unlinked',
+            avatar: att.avatar || null,
+            isActive: isCurrentlyActive,
+            isActiveMember: true,
+            activityCategory: 'ACTIVE',
+            status: isCurrentlyActive ? 'In Voice' : 'Joined',
+            currentChannelName: isCurrentlyActive ? (att.currentChannelName || 'Voice Room') : (lastSession?.channelName || 'Voice Room'),
+            currentServerName: isCurrentlyActive ? (att.currentServerName || 'Belmonts') : (lastSession?.serverName || 'Belmonts'),
+            inTime: inTimeStr,
+            outTime: outTimeStr,
+            firstJoinedAt: firstSession?.joinedAt || null,
+            lastLeftAt: isCurrentlyActive ? null : (lastSession?.leftAt || null),
+            currentSessionMinutes: isCurrentlyActive ? ongoingMinutes : (lastSession?.durationMinutes || 0),
+            totalDurationMinutes,
+            isEligible45,
+            points: isEligible45 ? 10 : 0,
+            sessions: allDaySessions,
+            joinCount: allDaySessions.length,
+            isRejoined: allDaySessions.length > 1,
+            role: matchedRosterMember?.team || 'Belmonts Member',
+            dateStr: queryDateStr,
+            dayName: dayInfo.dayName,
+            dateFormatted: dayInfo.dateFormatted,
+        });
+    }
+
+    // Identify Non-Active Members for THIS DATE
+    const nonActiveMembers = [];
+    for (const member of clanRoster) {
+        const mIdStr = member.id ? String(member.id) : null;
+        const mDiscIdStr = member.discordId ? String(member.discordId) : null;
+        const mUserStr = member.username ? member.username.toLowerCase() : null;
+        const mNameStr = member.displayName ? member.displayName.toLowerCase() : null;
+
+        const isMatched = (mIdStr && matchedRosterKeys.has(mIdStr)) ||
+            (mDiscIdStr && matchedRosterKeys.has(mDiscIdStr)) ||
+            (mUserStr && matchedRosterKeys.has(mUserStr)) ||
+            (mNameStr && matchedRosterKeys.has(mNameStr));
+
+        if (!isMatched) {
+            nonActiveMembers.push({
+                userId: member.discordId || String(member.id),
+                displayName: member.displayName || member.name || 'Member',
+                username: member.username || 'unlinked',
+                avatar: null,
+                isActive: false,
+                isActiveMember: false,
+                activityCategory: 'NON_ACTIVE',
+                status: 'Non-Active / Absent',
+                currentChannelName: '—',
+                currentServerName: 'Belmonts',
+                inTime: 'Did Not Join',
+                outTime: 'Absent',
+                firstJoinedAt: null,
+                lastLeftAt: null,
+                currentSessionMinutes: 0,
+                totalDurationMinutes: 0,
+                isEligible45: false,
+                points: 0,
+                sessions: [],
+                joinCount: 0,
+                isRejoined: false,
+                role: member.team || 'Belmonts Member',
+                dateStr: queryDateStr,
+                dayName: dayInfo.dayName,
+                dateFormatted: dayInfo.dateFormatted,
+            });
+        }
+    }
+
+    activeMembers.sort((a, b) => {
+        if (a.isActive && !b.isActive) return -1;
+        if (!a.isActive && b.isActive) return 1;
+        return b.totalDurationMinutes - a.totalDurationMinutes;
+    });
+
+    nonActiveMembers.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+    const allMembersList = [...activeMembers, ...nonActiveMembers];
+    const liveMembers = activeMembers.filter(m => m.isActive);
+
+    const formattedEvents = (voiceActivityTracker.events || [])
+        .filter(e => !e.timestamp || getDateStrInIST(e.timestamp) === queryDateStr)
+        .slice(0, 50)
+        .map(e => ({
+            ...e,
+            timestampStr: e.timestamp ? new Date(e.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' }) : '',
+        }));
+
+    const availableDays = getAvailableMeetingDays();
+
+    return {
+        trackerActive: true,
+        isOfficialMeetingActive: Boolean(gatheringSession.isActive && isToday),
+        meetingId: gatheringSession.meetingId || null,
+        selectedDate: queryDateStr,
+        dayName: dayInfo.dayName,
+        dateFormatted: dayInfo.dateFormatted,
+        fullLabel: dayInfo.fullLabel,
+        isToday,
+        availableDays,
+        meetingDate: queryDateStr,
+        currentTimeStr: now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' }),
+        stats: {
+            totalClanMembers: allMembersList.length,
+            activeVoiceCount: liveMembers.length,
+            totalActiveMembersToday: activeMembers.length,
+            nonActiveCount: nonActiveMembers.length,
+            totalVoiceMinutes,
+            qualified45Count,
+        },
+        liveMembers,
+        activeMembers,
+        nonActiveMembers,
+        members: allMembersList,
+        recentEvents: formattedEvents,
     };
 }
 
@@ -208,13 +850,27 @@ function scheduleGatheringPrompt(client) {
  */
 async function postGatheringAnnouncement(client, gatheringTime, confirmedBy = null) {
     try {
+        const confirmedText = confirmedBy ? ` • Confirmed by: **${confirmedBy}**` : '';
+        const message = `<@&${BELMONTS_ROLE_ID}> 🎙️ **Daily Gathering Confirmed** | ⏰ **${gatheringTime}** | 📍 <#${VOICE_ROOM_ID}>${confirmedText}`;
+
         const channel = await getChannel(client, COMMON_HALL_CHANNEL_ID);
-        if (!channel || !channel.isTextBased()) {
-            console.warn(`⚠ Common hall channel (${COMMON_HALL_CHANNEL_ID}) not found or not text-based`); return { success: false, error: 'CHANNEL_NOT_FOUND' }; }  const confirmedText = confirmedBy ? ` • Confirmed by: **${confirmedBy}**` : ''; const message = `<@&${BELMONTS_ROLE_ID}> 🎙️ **Daily Gathering Confirmed** | ⏰ **${gatheringTime}** | 📍 <#${VOICE_ROOM_ID}>${confirmedText}`;
+        if (channel && channel.isTextBased()) {
+            await channel.send({ content: message });
+            console.log(`✓ Posted gathering announcement to common-hall (${COMMON_HALL_CHANNEL_ID}) at ${gatheringTime}`);
+        }
 
-        await channel.send({ content: message });
+        // Also broadcast to other server workspace text channel
+        try {
+            const otherChannel = await getChannel(client, OTHER_TEXT_CHANNEL_ID);
+            if (otherChannel && otherChannel.isTextBased()) {
+                const otherMsg = `🎙️ **Daily Gathering Confirmed** | ⏰ **${gatheringTime}** | 📍 <#${OTHER_VOICE_ROOM_ID}>${confirmedText}`;
+                await otherChannel.send({ content: otherMsg });
+                console.log(`✓ Posted gathering announcement to other server channel (${OTHER_TEXT_CHANNEL_ID})`);
+            }
+        } catch (oErr) {
+            console.warn('Other server announcement notice:', oErr.message);
+        }
 
-        console.log(`✓ Posted gathering announcement to common-hall (${COMMON_HALL_CHANNEL_ID}) at${gatheringTime}`);
         return { success: true };
     } catch (error) {
         console.error(`Error posting announcement to common-hall:`, error.message);
@@ -239,6 +895,17 @@ async function sendGatheringReminder(client, gatheringTime) {
             await tinkering.send({ content: message });
         }
 
+        // Also broadcast to other server workspace text channel
+        try {
+            const otherChannel = await getChannel(client, OTHER_TEXT_CHANNEL_ID);
+            if (otherChannel && otherChannel.isTextBased()) {
+                const otherMsg = `⏰ **Daily Gathering starts in 5 minutes!** | ⏰ **${gatheringTime}** | 📍 Join: <#${OTHER_VOICE_ROOM_ID}>`;
+                await otherChannel.send({ content: otherMsg });
+            }
+        } catch (oErr) {
+            console.warn('Other server reminder notice:', oErr.message);
+        }
+
         console.log(`✓ Sent 5-minute reminder for gathering at ${gatheringTime}`);
     } catch (error) {
         console.error(`Error sending reminder:`, error.message);
@@ -251,16 +918,23 @@ async function sendGatheringReminder(client, gatheringTime) {
 async function sendGatheringLiveAnnouncement(client, gatheringTime) {
     try {
         const channel = await getChannel(client, COMMON_HALL_CHANNEL_ID);
-        if (!channel || !channel.isTextBased()) {
-            console.warn(`⚠ Common hall channel (${COMMON_HALL_CHANNEL_ID}) not found`);
-            return;
+        if (channel && channel.isTextBased()) {
+            const message = `<@&${BELMONTS_ROLE_ID}> 🔴 **Daily Gathering is LIVE NOW!** | ⏰ **Started:** ${gatheringTime} | 📍 Voice Room: <#${VOICE_ROOM_ID}>`;
+            await channel.send({ content: message });
+            console.log(`✓ Posted LIVE gathering announcement to common-hall (${COMMON_HALL_CHANNEL_ID}) at ${gatheringTime}`);
         }
 
-        const message = `<@&${BELMONTS_ROLE_ID}> 🔴 **Daily Gathering is LIVE NOW!** | ⏰ **Started:** ${gatheringTime} | 📍 Voice Room: <#${VOICE_ROOM_ID}>`;
-
-        await channel.send({ content: message });
-
-        console.log(`✓ Posted LIVE gathering announcement to common-hall (${COMMON_HALL_CHANNEL_ID}) at ${gatheringTime}`);
+        // Also broadcast to other server workspace text channel
+        try {
+            const otherChannel = await getChannel(client, OTHER_TEXT_CHANNEL_ID);
+            if (otherChannel && otherChannel.isTextBased()) {
+                const otherMsg = `🔴 **Daily Gathering is LIVE NOW!** | ⏰ **Started:** ${gatheringTime} | 📍 Voice Room: <#${OTHER_VOICE_ROOM_ID}>`;
+                await otherChannel.send({ content: otherMsg });
+                console.log(`✓ Posted LIVE announcement to other server channel (${OTHER_TEXT_CHANNEL_ID})`);
+            }
+        } catch (oErr) {
+            console.warn('Other server live announcement notice:', oErr.message);
+        }
     } catch (error) {
         console.error(`Error sending live announcement:`, error.message);
     }
@@ -296,19 +970,21 @@ async function startMeetingTracking(client, gatheringDate, gatheringTime) {
         gatheringSession.attendees.clear();
 
         try {
-            const voiceChannel = await getChannel(client, VOICE_ROOM_ID);
-            if (voiceChannel && voiceChannel.isVoiceBased()) {
-                voiceChannel.members.forEach(m => {
-                    if (!m.user.bot) {
-                        gatheringSession.attendees.set(m.id, {
-                            username: m.user.username,
-                            displayName: m.displayName || m.user.username,
-                            sessions: [],
-                            currentJoinAt: new Date(),
-                        });
-                        console.log(`✓ ${m.displayName} already in voice channel at gathering start`);
-                    }
-                });
+            const trackedChannels = getAllTrackedVoiceChannels(client);
+            for (const voiceChannel of trackedChannels) {
+                if (voiceChannel && (voiceChannel.isVoiceBased?.() || voiceChannel.type === 2)) {
+                    voiceChannel.members.forEach(m => {
+                        if (!m.user.bot) {
+                            gatheringSession.attendees.set(m.id, {
+                                username: m.user.username,
+                                displayName: m.displayName || m.user.username,
+                                sessions: [],
+                                currentJoinAt: m.voice?.joinedAt || new Date(),
+                            });
+                            console.log(`✓ ${m.displayName} already in voice channel (${voiceChannel.name}) at gathering start`);
+                        }
+                    });
+                }
             }
         } catch (vcErr) {
             // Ignore if unable to check
@@ -321,56 +997,183 @@ async function startMeetingTracking(client, gatheringDate, gatheringTime) {
 }
 
 /**
- * Track voice channel attendance
+ * Track voice channel attendance (Always-on for all meetings & general voice activity)
  */
 async function trackVoiceActivity(client) {
+    if (!client) return;
+
+    // Scan initial members already sitting in voice
+    scanInitialVoiceStates(client);
+
     client.on('voiceStateUpdate', async (oldState, newState) => {
-        if (!gatheringSession.isActive || !gatheringSession.meetingId) return;
-
-        const voiceChannelId = VOICE_ROOM_ID;
-        const userId = newState.id;
         const member = newState.member || oldState.member;
-        if (member?.user?.bot) return;
+        if (!member || member.user?.bot) return;
 
-        const joinedCommonHall = newState.channel?.id === voiceChannelId && oldState.channel?.id !== voiceChannelId;
-        const leftCommonHall = oldState.channel?.id === voiceChannelId && newState.channel?.id !== voiceChannelId;
+        const userId = member.id;
+        const displayName = member.displayName || member.user.username;
+        const username = member.user.username;
+        const avatar = member.user.displayAvatarURL ? member.user.displayAvatarURL({ size: 64 }) : null;
 
-        if (joinedCommonHall) {
-            const displayName = member?.displayName || member?.user.username;
-            const attendee = gatheringSession.attendees.get(userId) || {
-                username: member?.user.username,
+        const oldChannel = oldState.channel;
+        const newChannel = newState.channel;
+
+        const wasInTracked = isGatheringVoiceChannel(oldChannel);
+        const isInTracked = isGatheringVoiceChannel(newChannel);
+
+        const now = new Date();
+
+        // 1. Member joined a tracked voice channel
+        if (!wasInTracked && isInTracked) {
+            let attendee = voiceActivityTracker.attendees.get(userId);
+            if (!attendee) {
+                attendee = {
+                    userId,
+                    username,
+                    displayName,
+                    avatar,
+                    currentJoinAt: now,
+                    currentChannelId: newChannel.id,
+                    currentChannelName: newChannel.name,
+                    currentServerName: newChannel.guild?.name || 'Belmonts',
+                    sessions: [],
+                };
+            } else {
+                attendee.username = username;
+                attendee.displayName = displayName;
+                attendee.avatar = avatar || attendee.avatar;
+                attendee.currentJoinAt = now;
+                attendee.currentChannelId = newChannel.id;
+                attendee.currentChannelName = newChannel.name;
+                attendee.currentServerName = newChannel.guild?.name || attendee.currentServerName;
+            }
+            voiceActivityTracker.attendees.set(userId, attendee);
+
+            addTrackerEvent({
+                type: 'in',
+                userId,
                 displayName,
-                sessions: [],
-                currentJoinAt: null,
-            };
-            attendee.currentJoinAt = new Date();
-            attendee.username = member?.user.username || attendee.username;
-            attendee.displayName = displayName || attendee.displayName;
-            gatheringSession.attendees.set(userId, attendee);
-            console.log(`✓ ${displayName} joined gathering`);
+                username,
+                channelName: newChannel.name,
+                serverName: newChannel.guild?.name || 'Belmonts',
+                timestamp: now,
+            });
+
+            console.log(`✓ [Voice Tracker] ${displayName} joined ${newChannel.name} (${newChannel.guild?.name || 'Belmonts'}) at ${now.toLocaleTimeString()}`);
+
+            // If official gathering is active, also sync into gatheringSession
+            if (gatheringSession.isActive) {
+                const gAttendee = gatheringSession.attendees.get(userId) || {
+                    username,
+                    displayName,
+                    sessions: [],
+                    currentJoinAt: null,
+                };
+                gAttendee.currentJoinAt = now;
+                gAttendee.username = username;
+                gAttendee.displayName = displayName;
+                gatheringSession.attendees.set(userId, gAttendee);
+            }
         }
 
-        if (leftCommonHall) {
-            const attendee = gatheringSession.attendees.get(userId);
+        // 2. Member left a tracked voice channel
+        else if (wasInTracked && !isInTracked) {
+            const attendee = voiceActivityTracker.attendees.get(userId);
             if (attendee?.currentJoinAt) {
-                const leftAt = new Date();
-                const session = { joinedAt: attendee.currentJoinAt, leftAt };
-                attendee.sessions.push(session);
+                const leftAt = now;
+                const durationMs = Math.max(0, leftAt.getTime() - attendee.currentJoinAt.getTime());
+                const durationMinutes = Math.floor(durationMs / 60000);
+
+                const sessionNumber = attendee.sessions.length + 1;
+                const sessionRecord = {
+                    sessionNumber,
+                    joinedAt: attendee.currentJoinAt,
+                    leftAt,
+                    durationMinutes,
+                    channelName: attendee.currentChannelName || oldChannel?.name || 'Voice Room',
+                    serverName: attendee.currentServerName || oldChannel?.guild?.name || 'Belmonts',
+                    isActive: false,
+                };
+                attendee.sessions.push(sessionRecord);
                 attendee.currentJoinAt = null;
-                const databaseMember = await getMember(userId);
-                if (databaseMember?.member_id) {
-                    await recordVoiceSession({
-                        meeting_id: gatheringSession.meetingId,
-                        member_id: databaseMember.member_id,
-                        discord_user_id: userId,
-                        display_name: attendee.displayName,
-                        username: attendee.username,
-                        joined_at: session.joinedAt.toISOString(),
-                        left_at: leftAt.toISOString(),
-                        duration_minutes: Math.floor((leftAt - session.joinedAt) / 60000),
-                    });
+
+                addTrackerEvent({
+                    type: 'out',
+                    userId,
+                    displayName: attendee.displayName,
+                    username: attendee.username,
+                    channelName: sessionRecord.channelName,
+                    serverName: sessionRecord.serverName,
+                    timestamp: leftAt,
+                    durationMinutes,
+                });
+
+                console.log(`✓ [Voice Tracker] ${attendee.displayName} left ${sessionRecord.channelName}; session: ${durationMinutes} mins`);
+
+                // If gathering session is active, sync and save to DB
+                if (gatheringSession.isActive && gatheringSession.meetingId) {
+                    const gAttendee = gatheringSession.attendees.get(userId);
+                    if (gAttendee?.currentJoinAt) {
+                        gAttendee.sessions.push({ joinedAt: gAttendee.currentJoinAt, leftAt });
+                        gAttendee.currentJoinAt = null;
+                        try {
+                            const dbMember = await getMember(userId, attendee.username, attendee.displayName);
+                            if (dbMember?.member_id) {
+                                await recordVoiceSession({
+                                    meeting_id: gatheringSession.meetingId,
+                                    member_id: dbMember.member_id,
+                                    discord_user_id: userId,
+                                    display_name: attendee.displayName,
+                                    username: attendee.username,
+                                    joined_at: sessionRecord.joinedAt.toISOString(),
+                                    left_at: leftAt.toISOString(),
+                                    duration_minutes: durationMinutes,
+                                });
+                            }
+                        } catch (dbErr) {
+                            console.warn('Voice session db save warning:', dbErr.message);
+                        }
+                    }
                 }
-                console.log(`✓ ${attendee.displayName} left gathering; session saved`);
+            }
+        }
+
+        // 3. Member switched between two tracked voice channels
+        else if (wasInTracked && isInTracked && oldChannel?.id !== newChannel?.id) {
+            const attendee = voiceActivityTracker.attendees.get(userId);
+            if (attendee?.currentJoinAt) {
+                const switchTime = now;
+                const durationMs = Math.max(0, switchTime.getTime() - attendee.currentJoinAt.getTime());
+                const durationMinutes = Math.floor(durationMs / 60000);
+
+                const sessionNumber = attendee.sessions.length + 1;
+                attendee.sessions.push({
+                    sessionNumber,
+                    joinedAt: attendee.currentJoinAt,
+                    leftAt: switchTime,
+                    durationMinutes,
+                    channelName: attendee.currentChannelName || oldChannel?.name || 'Voice Room',
+                    serverName: attendee.currentServerName || oldChannel?.guild?.name || 'Belmonts',
+                    isActive: false,
+                });
+
+                addTrackerEvent({
+                    type: 'switch',
+                    userId,
+                    displayName: attendee.displayName,
+                    username: attendee.username,
+                    fromChannel: oldChannel.name,
+                    channelName: newChannel.name,
+                    serverName: newChannel.guild?.name || 'Belmonts',
+                    timestamp: switchTime,
+                    durationMinutes,
+                });
+
+                attendee.currentJoinAt = switchTime;
+                attendee.currentChannelId = newChannel.id;
+                attendee.currentChannelName = newChannel.name;
+                attendee.currentServerName = newChannel.guild?.name || attendee.currentServerName;
+
+                console.log(`✓ [Voice Tracker] ${attendee.displayName} moved from ${oldChannel.name} to ${newChannel.name} (${durationMinutes} mins)`);
             }
         }
     });
@@ -407,7 +1210,7 @@ async function endGatheringAndReport(client) {
                 const session = { joinedAt: attendee.currentJoinAt, leftAt: endTime };
                 attendee.sessions.push(session);
                 attendee.currentJoinAt = null;
-                const databaseMember = await getMember(userId);
+                const databaseMember = await getMember(userId, attendee.username, attendee.displayName);
                 if (databaseMember?.member_id) {
                     await recordVoiceSession({
                         meeting_id: gatheringSession.meetingId,
@@ -442,7 +1245,7 @@ async function endGatheringAndReport(client) {
             });
 
             try {
-                const member = await getMember(userId);
+                const member = await getMember(userId, attendee.username, attendee.displayName);
                 const memberId = member ? member.member_id : null;
 
                 if (!memberId) {
@@ -705,7 +1508,7 @@ async function handleGatheringTimeSelection(client, interaction) {
 
                 gatheringSession.endTimeout = setTimeout(() => {
                     endGatheringAndReport(client);
-                }, 2 * 60 * 60 * 1000);
+                }, MEETING_DURATION_MS); // 1 hour meeting duration
             };
 
             if (delayToLiveMs > 0) {
@@ -788,8 +1591,63 @@ function handleGatheringScheduler(client) {
     });
 }
 
+/**
+ * Resets voice tracking and gathering attendance to a fresh state.
+ * Wipes past sessions, re-entries, and history, starting clean from today onwards.
+ */
+function resetTrackerToFresh(options = {}) {
+    const { client = null, keepLiveConnected = true } = options;
+    const now = new Date();
+
+    // 1. Clear recorded attendees and historical events in memory
+    voiceActivityTracker.attendees.clear();
+    voiceActivityTracker.events = [];
+    gatheringSession.attendees.clear();
+
+    // 2. If members are currently in voice right now, re-initialize them fresh with currentJoinAt = now
+    if (keepLiveConnected && client) {
+        try {
+            const trackedChannels = getAllTrackedVoiceChannels(client);
+            for (const ch of trackedChannels) {
+                for (const [memberId, member] of ch.members) {
+                    if (member.user.bot) continue;
+                    const displayName = member.nickname || member.displayName || member.user.displayName || member.user.username;
+                    const username = member.user.username;
+                    const avatar = member.user.displayAvatarURL ? member.user.displayAvatarURL({ dynamic: true, size: 64 }) : null;
+
+                    voiceActivityTracker.attendees.set(memberId, {
+                        userId: memberId,
+                        username,
+                        displayName,
+                        avatar,
+                        currentJoinAt: now,
+                        currentChannelId: ch.id,
+                        currentChannelName: ch.name,
+                        currentServerName: ch.guild?.name || 'Belmonts',
+                        sessions: []
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn('Notice re-seeding live members during fresh reset:', err.message);
+        }
+    }
+
+    console.log('✓ voiceActivityTracker reset to fresh state today onwards.');
+    return {
+        success: true,
+        message: 'Voice activity tracker cleared to fresh state. All past attendance removed, ready today onwards.'
+    };
+}
+
 module.exports = {
     handleGatheringScheduler,
     endGatheringAndReport,
     getGatheringSnapshot,
+    getMeetingTrackerData,
+    voiceActivityTracker,
+    getDayAndDateInfo,
+    getDateStrInIST,
+    getAvailableMeetingDays,
+    resetTrackerToFresh,
 };

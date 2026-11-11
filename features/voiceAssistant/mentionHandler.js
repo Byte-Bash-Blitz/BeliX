@@ -10,22 +10,67 @@ const { EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 const { voiceSessionManager } = require('./voiceSessionManager');
 const { groqVoice } = require('./groqVoice');
 const { speechGenerator } = require('./speechGenerator');
+const { ConversationManager } = require('./conversationManager');
 const {
     isMemberInquiry,
     extractMemberQuery,
     detectStyleMode,
-    generateMemberTanglishDescription
+    generateMemberTanglishDescription,
+    getMemberKnowledge
 } = require('./memberKnowledgeEngine');
+
+// Persistent rolling memory for chat mentions and doubt analysis across channels
+const textChatMemory = new ConversationManager(20);
 
 /**
  * Checks if the message content matches a join intent.
  * Handles: "@BeliX join", "join voice", "join vc", "please join", "come to voice", "come here", etc.
+ * Guards against programming queries (e.g., SQL join, array join) and doubt queries.
  * @param {string} text
  * @returns {boolean}
  */
 function isJoinIntent(text) {
     const t = text.toLowerCase().trim();
-    return /\b(join|connect|come\s*(to\s*voice|in|here|over)?|enter|hop\s*in)\b/i.test(t);
+
+    // Guard against SQL / programming questions: "inner join", "left join", "string.join", "join()", etc.
+    if (/\b(inner\s*join|left\s*join|right\s*join|cross\s*join|outer\s*join|full\s*join|\.join|join\(\)|join\s*query|join\s*table|array\s*join)\b/i.test(t)) {
+        return false;
+    }
+
+    // Guard against educational / knowledge queries: "what is join", "explain join", "how to join array", "join pathi sollu", "exam irruku"
+    if (/\b(what\s*is|explain|how\s*to|difference|meaning|enna|eppadi|solli\s*kudu|doubt)\b/i.test(t) ||
+        /\b(pathi|pathii)\s*(sollu|solunga|solla|solren)\b/i.test(t) ||
+        (/\b(sollu|solunga|sol)\b/i.test(t) && !/\b(voice|vc|meeting|channel)\b/i.test(t))) {
+        return false;
+    }
+
+    // Strict positive match for voice join requests:
+    // 1. Exact or short phrases: "join", "join vc", "join voice", "join meeting", "join call", "join here"
+    if (/^(please\s*)?(join|connect|enter|hop\s*in)(\s*(the\s*)?(voice|vc|meeting|call|channel|here|us))?$/i.test(t)) {
+        return true;
+    }
+
+    // 2. Direct requests to join: "please join voice", "come to voice", "come to vc", "come here"
+    if (/\b(come\s*to\s*(voice|vc|meeting|call|channel)|come\s*(in|here|over)|hop\s*in(to)?\s*(voice|vc|meeting))\b/i.test(t)) {
+        return true;
+    }
+
+    // 3. Tanglish phrases: "voice ku vaa", "vc ku vaa", "meeting ku vaa", "meet ku vaa", "call ku vaa"
+    if (/\b(voice|vc|meeting|meet|call)\s*(ku|la|kulla)?\s*(vaa|vanga|vaanga|join\s*pannu)\b/i.test(t)) {
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * Checks if user explicitly wants BeliX to broadcast an answer via voice speech
+ * @param {string} text
+ * @returns {boolean}
+ */
+function isSpeakInVoiceIntent(text) {
+    const t = text.toLowerCase().trim();
+    return /^(speak|say|announce|broadcast)(\s+(this|in\s*voice|in\s*vc|aloud))?\b/i.test(t);
 }
 
 /**
@@ -212,25 +257,47 @@ function setupMentionHandler(client) {
         }
 
         // 7. USER ASKS A DOUBT / QUESTION VIA CHAT MENTION!
-        // BeliX generates the answer and REPLIES BY NATURAL VOICE in the meeting channel!
-        let session = voiceSessionManager.getSession(message.guild.id);
+        // Rule 1: BeliX ONLY joins voice when explicitly asked with a join intent ("@BeliX join").
+        // Rule 2: If BeliX is ALREADY in the meeting (voice channel), any doubt mentioned will reply by VOICE in the meeting & in chat!
+        // Rule 3: If BeliX is NOT in voice, it replies directly in text chat (with memory context) without joining voice!
+        const session = voiceSessionManager.getSession(message.guild.id);
+        const shouldReplyByVoice = Boolean(session && !session.isMuted);
 
-        // If BeliX is not yet in a voice channel, but the asking member is in one, auto-join!
-        if (!session && message.member?.voice?.channel) {
-            try {
-                const targetChannel = message.member.voice.channel;
-                const perms = targetChannel.permissionsFor(client.user);
-                if (perms.has(PermissionFlagsBits.Connect) && perms.has(PermissionFlagsBits.Speak)) {
-                    session = await voiceSessionManager.joinSession(client, targetChannel, message.channel);
-                }
-            } catch (joinErr) {
-                console.warn('Auto-join voice channel on question failed:', joinErr.message);
-            }
-        }
-
-        const thinkingMsg = await message.reply('🎙️ *Thinking... generating voice response for your meeting!*');
+        const thinkingMsg = await message.reply(
+            shouldReplyByVoice
+                ? `🎙️ *Thinking... answering by voice in #${session.voiceChannel.name} and chat!*`
+                : '💬 *Thinking... analyzing chat & memory!*'
+        );
 
         try {
+            // 🧠 Analyze recent channel chat messages (Memory of recent discussions)
+            let channelRecentChat = '';
+            try {
+                const recentMessages = await message.channel.messages.fetch({ limit: 10, before: message.id });
+                const formatted = [];
+                for (const msg of recentMessages.values()) {
+                    if (msg.author.id === client.user.id) {
+                        const desc = msg.embeds?.[0]?.description || msg.content;
+                        if (desc) formatted.push(`BeliX: "${desc.slice(0, 150)}"`);
+                    } else if (!msg.author.bot && msg.content && msg.content.trim()) {
+                        const name = msg.member?.displayName || msg.author.username;
+                        formatted.push(`${name}: "${msg.content.slice(0, 150)}"`);
+                    }
+                }
+                if (formatted.length > 0) {
+                    channelRecentChat = formatted.reverse().join('\n');
+                }
+            } catch (fetchErr) {
+                // Channel message history fetch failed or lack permissions, continue gracefully
+            }
+
+            // 🧠 Recognize and remember speaker from Belmonts clan knowledge
+            let speakerProfile = null;
+            try {
+                speakerProfile = (await getMemberKnowledge(message.author.id)) ||
+                                 (await getMemberKnowledge(speakerName));
+            } catch (e) {}
+
             // Feature 19: Check if message is inquiring about a Belmonts clan member
             // Supports typing the name (e.g. "who is Michael") OR directly mentioning the member (e.g. "@BeliX @Michael", "@BeliX @Michael pathi sollu")
             const otherUserMentioned = message.mentions.users.find(u => u.id !== client.user.id);
@@ -260,12 +327,15 @@ function setupMentionHandler(client) {
                 const replyText = memberResult.text;
                 const member = memberResult.member;
 
-                if (session && !session.isMuted) {
+                // Save to text chat memory
+                textChatMemory.addTurn(message.author.id, speakerName, cleanText, replyText);
+
+                if (shouldReplyByVoice) {
                     if (session.audioPlayer.isSpeaking()) {
                         session.audioPlayer.stop();
                     }
 
-                    // Convert Tanglish answer into natural voice audio
+                    // Convert Tanglish answer into natural voice audio (Cartesia cloned voice)
                     const { buffer } = await speechGenerator.generateSpeech(replyText);
 
                     // Speak the answer in the Discord voice channel
@@ -292,11 +362,7 @@ function setupMentionHandler(client) {
                         embed.addFields({ name: '🏷️ Aliases / Nicknames', value: member.aliases.join(', '), inline: false });
                     }
 
-                    if (member?.liveStats?.points !== undefined) {
-                        embed.setFooter({ text: `Belmonts Points: ${member.liveStats.points} • Solved: ${member.liveStats.problemsSolved || 0} • Feature 19 Natural Tanglish` });
-                    } else {
-                        embed.setFooter({ text: 'BeliX Belmonts Clan Knowledge Engine • Feature 19' });
-                    }
+                    embed.setFooter({ text: `Speaking via voice in #${session.voiceChannel.name} • Questions answered: ${session.questionsAnswered}` });
                     embed.setTimestamp();
 
                     return await thinkingMsg.edit({ content: null, embeds: [embed] });
@@ -304,7 +370,7 @@ function setupMentionHandler(client) {
                     const embed = new EmbedBuilder()
                         .setColor('#e67e22')
                         .setTitle(`🛡️ Belmonts Clan Member: ${member ? member.fullName : (memberQuery || cleanText)}`)
-                        .setDescription(`**"${cleanText}"**\n\n💬 **BeliX:**\n${replyText}\n\n*(Note: Voice output is currently muted. Mention \`@BeliX unmute\` to enable voice speech)*`)
+                        .setDescription(`**"${cleanText}"**\n\n💬 **BeliX:**\n${replyText}\n\n*(Note: Voice output is muted in #${session.voiceChannel.name}. Mention \`@BeliX unmute\` to enable voice speech)*`)
                         .addFields(
                             { name: '🎭 Mode', value: `\`${memberResult.mode}\``, inline: true },
                             { name: '🔰 Designation', value: member?.clanDesignation || 'Belmonts Member', inline: true }
@@ -314,19 +380,16 @@ function setupMentionHandler(client) {
                         embed.addFields({ name: '🏷️ Aliases / Nicknames', value: member.aliases.join(', '), inline: false });
                     }
 
-                    if (member?.liveStats?.points !== undefined) {
-                        embed.setFooter({ text: `Belmonts Points: ${member.liveStats.points} • Solved: ${member.liveStats.problemsSolved || 0} • Feature 19 Natural Tanglish` });
-                    } else {
-                        embed.setFooter({ text: 'BeliX Belmonts Clan Knowledge Engine • Feature 19' });
-                    }
+                    embed.setFooter({ text: 'BeliX Belmonts Clan Knowledge Engine • Feature 19' });
                     embed.setTimestamp();
 
                     return await thinkingMsg.edit({ content: null, embeds: [embed] });
                 } else {
+                    // Not in voice: reply directly in text chat with member profile!
                     const embed = new EmbedBuilder()
                         .setColor('#e67e22')
                         .setTitle(`🛡️ Belmonts Clan Member: ${member ? member.fullName : (memberQuery || cleanText)}`)
-                        .setDescription(`**"${cleanText}"**\n\n💬 **BeliX:**\n${replyText}\n\n💡 *Tip: Join a voice channel and mention \`@BeliX join\` to hear me speak my answers aloud in voice!*`)
+                        .setDescription(`**"${cleanText}"**\n\n💬 **BeliX:**\n${replyText}`)
                         .addFields(
                             { name: '🎭 Mode', value: `\`${memberResult.mode}\``, inline: true },
                             { name: '🔰 Designation', value: member?.clanDesignation || 'Belmonts Member', inline: true }
@@ -347,16 +410,26 @@ function setupMentionHandler(client) {
                 }
             }
 
-            const history = session ? session.conversation.getHistoryForPrompt() : '';
-            const replyText = await groqVoice.answerQuestion(cleanText, speakerName, history);
+            // Retrieve conversation memory (voice meeting memory if in voice, otherwise text chat memory)
+            const conversationHistory = session
+                ? session.conversation.getHistoryForPrompt()
+                : textChatMemory.getHistoryForPrompt();
 
-            if (session && !session.isMuted) {
-                // If BeliX is already speaking, interrupt to deliver the new answer
+            const replyText = await groqVoice.answerQuestion(cleanText, speakerName, conversationHistory, {
+                channelRecentChat,
+                speakerProfile
+            });
+
+            // Save exchange to memory for follow-up questions
+            textChatMemory.addTurn(message.author.id, speakerName, cleanText, replyText);
+
+            if (shouldReplyByVoice) {
+                // BeliX is active in a voice meeting! Deliver the answer by voice in the channel!
                 if (session.audioPlayer.isSpeaking()) {
                     session.audioPlayer.stop();
                 }
 
-                // Convert text answer into natural human-like voice audio
+                // Convert text answer into natural human-like voice audio (Cartesia cloned voice)
                 const { buffer } = await speechGenerator.generateSpeech(replyText);
 
                 // Speak the answer in the Discord voice channel!
@@ -366,7 +439,7 @@ function setupMentionHandler(client) {
                     reply: replyText
                 });
 
-                // Record into meeting memory for follow-up questions
+                // Record into meeting memory
                 session.conversation.addTurn(message.author.id, speakerName, cleanText, replyText);
                 session.questionsAnswered++;
 
@@ -375,25 +448,26 @@ function setupMentionHandler(client) {
                     .setColor('#3498db')
                     .setAuthor({ name: `${speakerName} asked:` })
                     .setDescription(`**"${cleanText}"**\n\n🎙️ **BeliX (Speaking in #${session.voiceChannel.name}):**\n${replyText}`)
-                    .setFooter({ text: `Speaking via voice • Questions answered: ${session.questionsAnswered}` })
+                    .setFooter({ text: `Speaking via voice in #${session.voiceChannel.name} • Questions answered: ${session.questionsAnswered}` })
                     .setTimestamp();
 
                 await thinkingMsg.edit({ content: null, embeds: [embed] });
             } else if (session && session.isMuted) {
-                // BeliX is in voice channel but muted
+                // In voice meeting, but muted
                 const embed = new EmbedBuilder()
                     .setColor('#e67e22')
                     .setAuthor({ name: `${speakerName} asked:` })
-                    .setDescription(`**"${cleanText}"**\n\n💬 **BeliX:**\n${replyText}\n\n*(Note: Voice output is currently muted. Mention \`@BeliX unmute\` to enable voice speech)*`)
+                    .setDescription(`**"${cleanText}"**\n\n💬 **BeliX:**\n${replyText}\n\n*(Note: Voice output is muted in #${session.voiceChannel.name}. Mention \`@BeliX unmute\` to enable voice speech)*`)
                     .setTimestamp();
 
                 await thinkingMsg.edit({ content: null, embeds: [embed] });
             } else {
-                // Not in voice channel
+                // Not in a voice channel: Reply directly in text chat with memory context!
                 const embed = new EmbedBuilder()
                     .setColor('#3498db')
                     .setAuthor({ name: `${speakerName} asked:` })
-                    .setDescription(`**"${cleanText}"**\n\n💬 **BeliX:**\n${replyText}\n\n💡 *Tip: Join a voice channel and mention \`@BeliX join\` to hear me speak my answers aloud in voice!*`)
+                    .setDescription(`**"${cleanText}"**\n\n💬 **BeliX:**\n${replyText}`)
+                    .setFooter({ text: 'BeliX AI Assistant • Remembers conversation context' })
                     .setTimestamp();
 
                 await thinkingMsg.edit({ content: null, embeds: [embed] });

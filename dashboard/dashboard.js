@@ -762,9 +762,15 @@ function renderGatheringsPage(gData) {
         <span class="icon-blue">👥</span>
         <span>Members Who Joined Gathering — <strong style="color: #38bdf8;">${escapeHtml(fullLabel)}</strong> (${attendees.length})</span>
       </div>
-      <span class="badge-stable" style="font-size: 11px;">
-        📅 Day-by-Day Partitioned
-      </span>
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <button id="btn-reset-gathering" class="btn-reset-danger" title="Clear recorded attendance for this session and start fresh today onwards">
+          <span>🧹</span>
+          <span>Start Fresh Today</span>
+        </button>
+        <span class="badge-stable" style="font-size: 11px;">
+          📅 Day-by-Day Partitioned
+        </span>
+      </div>
     </div>
 
     ${attendees.length > 0 ? `
@@ -880,6 +886,33 @@ function attachGatheringsPageEvents(gData) {
       }
     };
   });
+
+  const resetGatheringBtn = $('#btn-reset-gathering');
+  if (resetGatheringBtn) {
+    resetGatheringBtn.onclick = async () => {
+      const confirmed = confirm('Remove current gathering attendance records and start fresh today onwards?');
+      if (!confirmed) return;
+      try {
+        const res = await fetch('/api/attendance/reset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: 'all' })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('✅ Gathering attendance cleared! Starting fresh today onwards.');
+          const query = state.selectedGatheringDate ? `?date=${encodeURIComponent(state.selectedGatheringDate)}` : '';
+          const updatedData = await api(`/api/gatherings${query}`);
+          $('#content').innerHTML = renderGatheringsPage(updatedData);
+          attachGatheringsPageEvents(updatedData);
+        } else {
+          showToast('⚠️ Reset notice: ' + (data.error || 'Failed'));
+        }
+      } catch (err) {
+        showToast('❌ Reset error: ' + err.message);
+      }
+    };
+  }
 }
 
 function renderAttendancePage(attData) {

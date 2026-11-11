@@ -83,8 +83,8 @@ class VoiceConnectionManager extends EventEmitter {
                 console.log(`[VoiceConnection] Attempting connection to #${voiceChannel.name} (Attempt ${attempt}/${maxRetries})...`);
 
                 this.connection = joinVoiceChannel({
-                    channelId: voiceChannel.id,
-                    guildId: this.guildId,
+                    channelId: String(voiceChannel.id),
+                    guildId: String(this.guildId),
                     adapterCreator: voiceChannel.guild.voiceAdapterCreator,
                     selfDeaf: false, // Must be false to listen to audio!
                     selfMute: false
@@ -92,8 +92,8 @@ class VoiceConnectionManager extends EventEmitter {
 
                 this._setupStateHandlers();
 
-                // Wait up to 25s for connection to transition to Ready
-                await entersState(this.connection, VoiceConnectionStatus.Ready, 25000);
+                // Wait up to 20s for connection to transition to Ready
+                await entersState(this.connection, VoiceConnectionStatus.Ready, 20000);
                 console.log(`✓ Voice connection ready in channel: #${voiceChannel.name}`);
                 return this.connection;
             } catch (error) {
@@ -120,6 +120,7 @@ class VoiceConnectionManager extends EventEmitter {
         if (!this.connection) return;
 
         this.connection.on('stateChange', (oldState, newState) => {
+            if (oldState.status === newState.status) return;
             console.log(`[VoiceConnection] #${this.channel?.name || 'VC'} state: ${oldState.status} -> ${newState.status}`);
         });
 

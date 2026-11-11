@@ -1,6 +1,46 @@
 require('dotenv').config({ path: ['.env', 'utils/.env'] });
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
+
+// Ensure only ONE instance of BeliX runs at a time to prevent Discord Voice gateway conflict loops
+const LOCK_FILE = path.join(__dirname, '.bot.lock');
+function acquireSingleInstanceLock() {
+    try {
+        if (fs.existsSync(LOCK_FILE)) {
+            const oldPid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim(), 10);
+            if (oldPid && oldPid !== process.pid) {
+                try {
+                    process.kill(oldPid, 0); // Throws if process does not exist
+                    console.error(`\n❌ [BeliX Conflict Guard] Another instance of BeliX is ALREADY running (PID: ${oldPid})!`);
+                    console.error(`Running multiple bot instances with the same token causes Discord voice gateway loops (connecting <-> signalling).`);
+                    console.error(`Please close the other terminal or run: Stop-Process -Id ${oldPid} -Force\n`);
+                    process.exit(1);
+                } catch (e) {
+                    // Stale lock file from crashed process, safe to continue
+                }
+            }
+        }
+        fs.writeFileSync(LOCK_FILE, String(process.pid), 'utf8');
+
+        const cleanLock = () => {
+            try {
+                if (fs.existsSync(LOCK_FILE)) {
+                    const savedPid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim(), 10);
+                    if (savedPid === process.pid) {
+                        fs.unlinkSync(LOCK_FILE);
+                    }
+                }
+            } catch (e) {}
+        };
+
+        process.on('exit', cleanLock);
+        process.on('SIGINT', () => { cleanLock(); process.exit(0); });
+        process.on('SIGTERM', () => { cleanLock(); process.exit(0); });
+    } catch (err) {}
+}
+acquireSingleInstanceLock();
+
 const { Client, GatewayIntentBits, Partials } = require('discord.js');
 const { handleWelcomeMessage } = require('./features/welcome');
 const { handleProgressUpdate } = require('./features/progressupdate');
@@ -479,7 +519,10 @@ const server = app.listen(PORT, () => {
 
 server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
-        console.warn(`⚠ Port ${PORT} is already in use. Skipping Express server.`);
+        console.error(`\n❌ [BeliX Conflict Guard] Port ${PORT} is already in use by another instance!`);
+        console.error(`Running multiple bot instances with the same token causes Discord voice gateway loops (connecting <-> signalling).`);
+        console.error(`Please stop the previous instance before starting a new one to prevent voice conflicts.\n`);
+        process.exit(1);
     } else {
         console.error('Express server error:', err);
     }

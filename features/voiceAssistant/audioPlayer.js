@@ -9,10 +9,12 @@ const {
     createAudioResource,
     AudioPlayerStatus,
     entersState,
-    StreamType
+    StreamType,
+    NoSubscriberBehavior
 } = require('@discordjs/voice');
 const { Readable } = require('stream');
 const EventEmitter = require('events');
+const prism = require('prism-media');
 
 // Ensure ffmpeg path is set from ffmpeg-static if available
 try {
@@ -27,10 +29,18 @@ try {
 class VoiceAudioPlayer extends EventEmitter {
     constructor() {
         super();
-        this.player = createAudioPlayer();
+        // Configure player to buffer up to 5 seconds of jitter (250 frames)
+        // and keep playback smooth even if minor network/CPU hiccups occur.
+        this.player = createAudioPlayer({
+            behaviors: {
+                noSubscriber: NoSubscriberBehavior.Play,
+                maxMissedFrames: 250
+            }
+        });
         this.queue = [];
         this.currentTrack = null;
         this.isStopped = false;
+        this._currentStream = null;
 
         this._setupListeners();
     }
@@ -105,14 +115,43 @@ class VoiceAudioPlayer extends EventEmitter {
         this.currentTrack = next;
 
         try {
-            const readable = Readable.from(next.buffer);
-            const resource = createAudioResource(readable, {
-                inlineVolume: true
+            // Clean up any lingering stream
+            if (this._currentStream) {
+                try {
+                    this._currentStream.destroy();
+                } catch (e) {}
+                this._currentStream = null;
+            }
+
+            // High performance native FFmpeg transcoder to Ogg Opus.
+            // Using native libopus inside FFmpeg eliminates heavy JavaScript Opus encoding,
+            // producing smooth, studio-quality 20ms frames and preventing voice breaks/stutter.
+            const transcoder = new prism.FFmpeg({
+                args: [
+                    '-analyzeduration', '0',
+                    '-loglevel', '0',
+                    '-i', 'pipe:0',
+                    '-acodec', 'libopus',
+                    '-f', 'opus',
+                    '-ar', '48000',
+                    '-ac', '2',
+                    '-b:a', '96k'
+                ]
             });
 
-            if (resource.volume) {
-                resource.volume.setVolume(1.0);
-            }
+            this._currentStream = transcoder;
+
+            transcoder.on('error', (err) => {
+                console.warn('Audio transcoder error:', err.message);
+            });
+
+            const readable = Readable.from(next.buffer);
+            readable.pipe(transcoder);
+
+            const resource = createAudioResource(transcoder, {
+                inputType: StreamType.OggOpus,
+                inlineVolume: false
+            });
 
             this.player.play(resource);
         } catch (err) {
@@ -128,6 +167,12 @@ class VoiceAudioPlayer extends EventEmitter {
     stop() {
         this.queue = [];
         this.currentTrack = null;
+        if (this._currentStream) {
+            try {
+                this._currentStream.destroy();
+            } catch (e) {}
+            this._currentStream = null;
+        }
         try {
             this.player.stop(true); // force stop
             this.emit('interrupted');

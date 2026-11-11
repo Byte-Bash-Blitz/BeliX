@@ -13,6 +13,22 @@ const WAKE_WORD_PATTERNS = [
     'beli x',
     'b lix',
     'be lix',
+    // Conversational & brother wake phrases ("Hey bro", "Bro", etc.)
+    'hey bro',
+    'hi bro',
+    'hello bro',
+    'ok bro',
+    'okay bro',
+    'yo bro',
+    'dei bro',
+    'dai bro',
+    'bro',
+    'brother',
+    'brou',
+    'broda',
+    'bhai',
+    'machan',
+    'machi',
     // Whisper speech-to-text phonetic misinterpretations
     'blitz',      // Very common Whisper transcription for "Blix"
     'balik',      // Common Whisper transcription for "BeliX"
@@ -51,7 +67,9 @@ const PREFIXES = [
     'yo',
     'dei',
     'dai',
-    'pa'
+    'pa',
+    'enna',
+    'aama'
 ];
 
 class WakeWordDetector {

@@ -6,6 +6,19 @@ const fs = require('fs');
 // Ensure only ONE instance of BeliX runs at a time to prevent Discord Voice gateway conflict loops
 const LOCK_FILE = path.join(__dirname, '.bot.lock');
 function acquireSingleInstanceLock() {
+    // In cloud / container environments (Render, Railway, Fly.io, Heroku, Docker),
+    // container orchestration manages instance lifecycles, so skip local file-based PID lock.
+    const isCloudEnv = Boolean(
+        process.env.NODE_ENV === 'production' ||
+        process.env.RENDER ||
+        process.env.RAILWAY_ENVIRONMENT ||
+        process.env.FLY_APP_NAME ||
+        process.env.HEROKU_APP_ID ||
+        process.env.DYNO ||
+        process.env.KUBERNETES_SERVICE_HOST
+    );
+    if (isCloudEnv) return;
+
     try {
         if (fs.existsSync(LOCK_FILE)) {
             const oldPid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim(), 10);
@@ -511,18 +524,30 @@ app.get('/status', (req, res) => {
 });
 
 // Start Express server
-const server = app.listen(PORT, () => {
-    console.log(`Express server running on port ${PORT}`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Express server running on port ${PORT} (0.0.0.0)`);
     console.log(`Health check: http://localhost:${PORT}/health`);
     console.log(`Status check: http://localhost:${PORT}/status`);
 });
 
 server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
-        console.error(`\n❌ [BeliX Conflict Guard] Port ${PORT} is already in use by another instance!`);
-        console.error(`Running multiple bot instances with the same token causes Discord voice gateway loops (connecting <-> signalling).`);
-        console.error(`Please stop the previous instance before starting a new one to prevent voice conflicts.\n`);
-        process.exit(1);
+        console.warn(`⚠ Port ${PORT} is already in use.`);
+        // In local development, prevent multiple local bot processes from fighting over voice gateway
+        const isCloudEnv = Boolean(
+            process.env.NODE_ENV === 'production' ||
+            process.env.RENDER ||
+            process.env.RAILWAY_ENVIRONMENT ||
+            process.env.FLY_APP_NAME ||
+            process.env.HEROKU_APP_ID ||
+            process.env.DYNO
+        );
+        if (!isCloudEnv) {
+            console.error(`\n❌ [BeliX Conflict Guard] Port ${PORT} is already in use by another instance!`);
+            console.error(`Running multiple bot instances with the same token causes Discord voice gateway loops.`);
+            console.error(`Please stop the previous instance before starting a new one.\n`);
+            process.exit(1);
+        }
     } else {
         console.error('Express server error:', err);
     }

@@ -282,6 +282,8 @@ async function runAllTests() {
     console.log('\n--- 8. @BeliX Mention Intent Detection Tests ---');
     runTest('isJoinIntent: detects natural join phrases', () => {
         assert.strictEqual(isJoinIntent('join'), true);
+        assert.strictEqual(isJoinIntent('joi'), true);
+        assert.strictEqual(isJoinIntent('joinn'), true);
         assert.strictEqual(isJoinIntent('join voice'), true);
         assert.strictEqual(isJoinIntent('join vc'), true);
         assert.strictEqual(isJoinIntent('please join the meeting'), true);

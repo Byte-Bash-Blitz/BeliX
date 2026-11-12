@@ -45,8 +45,8 @@ function isJoinIntent(text) {
     }
 
     // Strict positive match for voice join requests:
-    // 1. Exact or short phrases: "join", "join vc", "join voice", "join meeting", "join call", "join here"
-    if (/^(please\s*)?(join|connect|enter|hop\s*in)(\s*(the\s*)?(voice|vc|meeting|call|channel|here|us))?$/i.test(t)) {
+    // 1. Exact or short phrases: "join", "joi", "joinn", "join vc", "join voice", "join meeting", "join call", "join here"
+    if (/^(please\s*)?(join|joi|joinn|joine|connect|enter|hop\s*in)(\s*(the\s*)?(voice|vc|meeting|call|channel|here|us))?$/i.test(t)) {
         return true;
     }
 
@@ -154,41 +154,67 @@ function setupMentionHandler(client) {
             });
         }
 
-        // 2. JOIN INTENT (e.g. "@BeliX join", "@BeliX please join voice")
+        // 2. JOIN INTENT (e.g. "@BeliX join", "@BeliX please join voice", or mentioning in a voice channel)
         if (isJoinIntent(cleanText)) {
-            const voiceChannel = message.member?.voice?.channel;
-
-            if (!voiceChannel) {
-                return message.reply('⚠️ Please join a voice channel first, then mention me with **join** (e.g., `@BeliX join`) so I know which channel to join!');
-            }
-
-            // Check bot permissions in voice channel
-            const permissions = voiceChannel.permissionsFor(client.user);
-            if (!permissions.has(PermissionFlagsBits.Connect) || !permissions.has(PermissionFlagsBits.Speak)) {
-                return message.reply(`❌ I don't have permission to **Connect** or **Speak** in **${voiceChannel.name}**. Please check my channel permissions.`);
-            }
-
-            const statusMsg = await message.reply(`🎙️ Joining **${voiceChannel.name}**...`);
-
             try {
-                const session = await voiceSessionManager.joinSession(client, voiceChannel, message.channel);
+                // Determine target voice channel:
+                // 1) Direct voice channel text chat where the message was typed
+                // 2) Sender's current active voice channel
+                // 3) Refetched sender's voice channel from guild member cache
+                let voiceChannel = (message.channel.isVoiceBased?.() ? message.channel : null) || message.member?.voice?.channel;
 
-                const embed = new EmbedBuilder()
-                    .setColor('#2ecc71')
-                    .setTitle('🎙️ BeliX Joined Voice Channel')
-                    .setDescription(`Connected to **${voiceChannel.name}**!\nI'll introduce myself in voice momentarily.`)
-                    .addFields(
-                        { name: '🗣️ In Voice', value: 'Say **"Hey BeliX"** followed by your question.', inline: true },
-                        { name: '💬 In Chat', value: 'Mention `@BeliX <question>` and I\'ll answer by voice!', inline: true },
-                        { name: '👋 Leave', value: 'Mention `@BeliX leave` to disconnect', inline: true }
-                    )
-                    .setFooter({ text: 'BeliX Real-Time Voice Meeting Assistant' })
-                    .setTimestamp();
+                if (!voiceChannel && message.guild) {
+                    try {
+                        const freshMember = await message.guild.members.fetch(message.author.id);
+                        if (freshMember?.voice?.channel) {
+                            voiceChannel = freshMember.voice.channel;
+                        }
+                    } catch (e) {}
+                }
 
-                await statusMsg.edit({ content: null, embeds: [embed] });
-            } catch (error) {
-                console.error('Error joining via mention:', error);
-                await statusMsg.edit({ content: `❌ Failed to join **${voiceChannel.name}**: ${error.message}` });
+                if (!voiceChannel) {
+                    return await message.reply('⚠️ Please join a voice channel first (or mention me with **`join`** inside a voice channel chat) so I know which channel to join!');
+                }
+
+                // Check if already in this channel
+                const existingSession = voiceSessionManager.getSession(message.guild.id);
+                if (existingSession && existingSession.voiceChannel.id === voiceChannel.id) {
+                    return await message.reply(`🎙️ I'm already connected to **${voiceChannel.name}**! Say **"Hey BeliX"** or **"Hey bro"** in voice, or mention me here with any question!`);
+                }
+
+                // Check bot permissions in voice channel
+                const permissions = voiceChannel.permissionsFor(client.user);
+                if (permissions && (!permissions.has(PermissionFlagsBits.Connect) || !permissions.has(PermissionFlagsBits.Speak))) {
+                    return await message.reply(`❌ I don't have permission to **Connect** or **Speak** in **${voiceChannel.name}**. Please check my channel permissions.`);
+                }
+
+                const statusMsg = await message.reply(`🎙️ Joining **${voiceChannel.name}**...`);
+
+                try {
+                    const session = await voiceSessionManager.joinSession(client, voiceChannel, message.channel);
+
+                    const embed = new EmbedBuilder()
+                        .setColor('#2ecc71')
+                        .setTitle('🎙️ BeliX Joined Voice Channel')
+                        .setDescription(`Connected to **${voiceChannel.name}**!\nI'll introduce myself in voice momentarily.`)
+                        .addFields(
+                            { name: '🗣️ In Voice', value: 'Say **"Hey BeliX"** or **"Hey bro"** followed by your question.', inline: true },
+                            { name: '💬 In Chat', value: 'Mention `@BeliX <question>` and I\'ll answer by voice!', inline: true },
+                            { name: '👋 Leave', value: 'Mention `@BeliX leave` to disconnect', inline: true }
+                        )
+                        .setFooter({ text: 'BeliX Real-Time Voice Meeting Assistant' })
+                        .setTimestamp();
+
+                    await statusMsg.edit({ content: null, embeds: [embed] });
+                } catch (error) {
+                    console.error('Error joining via mention:', error);
+                    await statusMsg.edit({ content: `❌ Failed to join **${voiceChannel.name}**: ${error.message}` });
+                }
+            } catch (err) {
+                console.error('Unhandled error in join handler:', err);
+                try {
+                    await message.reply(`❌ Unable to process join request: ${err.message}`);
+                } catch (e) {}
             }
             return;
         }

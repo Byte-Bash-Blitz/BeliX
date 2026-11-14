@@ -176,6 +176,21 @@ function setupMentionHandler(client) {
                     return await message.reply('⚠️ Please join a voice channel first (or mention me with **`join`** inside a voice channel chat) so I know which channel to join!');
                 }
 
+                // If running on Render, inform users immediately with attendance & doubt help instead of hanging on blocked UDP
+                if (process.env.RENDER) {
+                    const embed = new EmbedBuilder()
+                        .setColor('#3498db')
+                        .setTitle('🎙️ BeliX Meeting Assistant (Render Cloud Mode)')
+                        .setDescription(`Active in **#${voiceChannel.name}**!\n\n` +
+                            `• ⏱️ **Meeting Attendance**: Actively tracking 45-minute attendance for all members in **#${voiceChannel.name}**.\n` +
+                            `• 💬 **Ask Doubts in Chat**: Mention me here \`@BeliX <question>\` anytime and I'll answer with full Tanglish AI memory!\n` +
+                            `• 🗣️ **Live Voice Audio**: Render's cloud servers restrict raw UDP microphone streaming. To have me speak aloud through the microphone during meetings, run BeliX locally with \`npm start\`.`)
+                        .setFooter({ text: 'BeliX Belmonts Clan Meeting Assistant • 24/7 Cloud Attendance Active' })
+                        .setTimestamp();
+
+                    return await message.reply({ embeds: [embed] });
+                }
+
                 // Check if already in this channel
                 const existingSession = voiceSessionManager.getSession(message.guild.id);
                 if (existingSession && existingSession.voiceChannel.id === voiceChannel.id) {

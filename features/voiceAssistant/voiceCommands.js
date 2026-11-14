@@ -113,6 +113,21 @@ async function handleVoiceInteraction(interaction) {
                     });
                 }
 
+                // If running on Render, provide immediate clear guidance instead of hanging on blocked UDP
+                if (process.env.RENDER) {
+                    const embed = new EmbedBuilder()
+                        .setColor('#3498db')
+                        .setTitle('🎙️ BeliX Meeting Assistant (Render Cloud Mode)')
+                        .setDescription(`Active in **#${voiceChannel.name}**!\n\n` +
+                            `• ⏱️ **Meeting Attendance**: Actively tracking 45-minute attendance for all members in **#${voiceChannel.name}**.\n` +
+                            `• 💬 **Ask Doubts in Chat**: Mention \`@BeliX <question>\` anytime and I'll answer with full Tanglish AI memory!\n` +
+                            `• 🗣️ **Live Voice Audio**: Render's cloud servers restrict raw UDP microphone streaming. To have me speak aloud through the microphone during meetings, run BeliX locally with \`npm start\`.`)
+                        .setFooter({ text: 'BeliX Belmonts Clan Meeting Assistant • 24/7 Cloud Attendance Active' })
+                        .setTimestamp();
+
+                    return interaction.editReply({ embeds: [embed] });
+                }
+
                 // Check permissions
                 const permissions = voiceChannel.permissionsFor(interaction.client.user);
                 if (!permissions.has(PermissionFlagsBits.Connect) || !permissions.has(PermissionFlagsBits.Speak)) {

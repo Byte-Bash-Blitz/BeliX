@@ -112,8 +112,16 @@ class VoiceConnectionManager extends EventEmitter {
             }
         }
 
+        const isUdpBlocked = Boolean(
+            lastError?.message?.includes('IP discovery') ||
+            (lastError?.message?.includes('aborted') && (process.env.RENDER || process.env.NODE_ENV === 'production'))
+        );
         this.leave();
-        throw new Error(`Failed to establish voice connection after ${maxRetries} attempts: ${lastError?.message || 'Connection timed out'}`);
+        throw new Error(
+            isUdpBlocked
+                ? 'Voice UDP audio streaming is restricted by the cloud hosting environment. Please run BeliX locally during meetings for live microphone voice output.'
+                : `Failed to establish voice connection after ${maxRetries} attempts: ${lastError?.message || 'Connection timed out'}`
+        );
     }
 
     _setupStateHandlers() {

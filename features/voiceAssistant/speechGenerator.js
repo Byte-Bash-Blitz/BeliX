@@ -10,7 +10,7 @@ const ffmpegPath = require('ffmpeg-static');
 
 class SpeechGenerator {
     constructor() {
-        this.cartesiaApiKey = process.env.CARTESIA_API_KEY || 'sk_car_S2jTpyZnED8mkrpCeADYu5';
+        this.cartesiaApiKey = (process.env.CARTESIA_API_KEY || '').trim();
         this.cartesiaModelId = process.env.CARTESIA_MODEL_ID || 'sonic-3.6';
         this.cartesiaVoiceId = process.env.CARTESIA_VOICE_ID || 'fed32815-0139-4026-ba22-949763a5d17b';
         this.cartesiaClient = null;

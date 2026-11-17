@@ -60,7 +60,7 @@ class GroqVoice {
      */
     async _chatWithFallback(messages, max_tokens = 800, temperature = 0.6) {
         if (!this.groq) {
-            throw new Error('GROQ_API_KEY is not configured in .env file.');
+            throw new Error('GROQ_API_KEY is not configured in the environment.');
         }
 
         const candidateModels = [
@@ -115,7 +115,7 @@ class GroqVoice {
                 provider: 'Groq',
                 model: this.model,
                 latencyMs: 0,
-                message: 'GROQ_API_KEY is not configured in .env file.'
+                message: 'GROQ_API_KEY is not configured in the environment.'
             };
         }
 

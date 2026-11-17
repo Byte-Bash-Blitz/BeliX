@@ -114,7 +114,7 @@ async function handleVoiceInteraction(interaction) {
                 }
 
                 // If running on Render, provide immediate clear guidance instead of hanging on blocked UDP
-                if (process.env.RENDER) {
+                if (process.env.RENDER || process.env.RENDER_SERVICE_ID) {
                     const embed = new EmbedBuilder()
                         .setColor('#3498db')
                         .setTitle('🎙️ BeliX Meeting Assistant (Render Cloud Mode)')
@@ -449,4 +449,3 @@ module.exports = {
     getVoiceSlashCommands,
     handleVoiceInteraction
 };
-

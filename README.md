@@ -45,6 +45,14 @@ The existing Express server serves the management dashboard at:
 http://127.0.0.1:3000/
 ```
 
+The dedicated dashboard endpoint is:
+
+```text
+http://127.0.0.1:3000/dashboard
+```
+
+On Render, use `https://<your-service>.onrender.com/dashboard`.
+
 It uses live Discord.js, Supabase, bot health, gathering, member, command, and attendance data. The dashboard does not invent unsupported controls: moderation actions, command toggles, AI deployment settings, and process restarts remain read-only until their backend capabilities are implemented.
 
 To enable authenticated dashboard administration endpoints, add a private token to `.env`:
@@ -229,6 +237,35 @@ BeliX/
    ```bash
    node index.js
    ```
+
+### Render deployment
+
+The Render service must be connected to the canonical repository:
+`https://github.com/Byte-Bash-Blitz/BeliX`, branch `main`. The repository
+includes [`render.yaml`](./render.yaml) with the same source, build command,
+start command, and `/health` check.
+
+If an existing Render service shows a clone URL such as
+`andreabetrina/BeliX`, update its **Repository** to
+`Byte-Bash-Blitz/BeliX`, select `main`, and trigger **Manual Deploy → Deploy
+latest commit**. Verify the deploy log shows the current `main` commit before
+checking the service URL.
+
+Add the AI variables in Render under **Environment**; local `.env` values are
+not uploaded during deployment:
+
+```env
+GROQ_API_KEY=your_groq_api_key
+GROQ_MODEL=openai/gpt-oss-120b
+GROQ_WHISPER_MODEL=whisper-large-v3
+```
+
+Render web services can run the Groq AI chat and scheduled features 24/7, but
+they cannot provide the UDP networking required for Discord voice receive and
+playback. Therefore `@BeliX <question>` works in text channels on Render, while
+`/belix-join`, wake-word listening, and spoken voice replies require a
+UDP-capable host (or a local process). The `/status` endpoint reports both AI
+configuration and voice availability.
 
 ---
 

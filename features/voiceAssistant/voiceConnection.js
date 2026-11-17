@@ -114,7 +114,11 @@ class VoiceConnectionManager extends EventEmitter {
 
         const isUdpBlocked = Boolean(
             lastError?.message?.includes('IP discovery') ||
-            (lastError?.message?.includes('aborted') && (process.env.RENDER || process.env.NODE_ENV === 'production'))
+            (lastError?.message?.includes('aborted') && (
+                process.env.RENDER ||
+                process.env.RENDER_SERVICE_ID ||
+                process.env.NODE_ENV === 'production'
+            ))
         );
         this.leave();
         throw new Error(
@@ -214,4 +218,3 @@ class VoiceConnectionManager extends EventEmitter {
 }
 
 module.exports = { VoiceConnectionManager };
-

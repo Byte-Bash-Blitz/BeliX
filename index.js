@@ -23,12 +23,14 @@ const { handleScheduledReminders } = require('./features/scheduledReminders');
 const { handleVibeCodeReport } = require('./features/dailyVibeCodeReport');
 const { handleGatheringScheduler, getGatheringSnapshot, getMeetingTrackerData, resetTrackerToFresh, getDateStrInIST, getDayAndDateInfo } = require('./features/dailyGatheringscheduler');
 const { handleVoiceAssistant } = require('./features/voiceAssistant/voiceAssistant');
+const { groqVoice } = require('./features/voiceAssistant/groqVoice');
 const { getAllMembers, getAttendanceAnalytics, getWeeklyAttendanceReport, clearAllAttendanceData, clearOlderAttendanceData } = require('./database/db');
 // Express setup
 const app = express();
 const PORT = process.env.PORT || 3000;
 const dashboardPath = path.join(__dirname, 'dashboard');
 const dashboardAdminToken = process.env.DASHBOARD_ADMIN_TOKEN;
+const isCloudDeployment = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID);
 
 
 // Bot status tracking
@@ -99,6 +101,11 @@ handleScheduledReminders(client);
 handleVibeCodeReport(client);
 handleGatheringScheduler(client);
 handleVoiceAssistant(client);
+if (groqVoice.isConfigured()) {
+    console.log(`✓ Groq AI configured (model: ${groqVoice.model})`);
+} else {
+    console.warn('⚠ Groq AI is disabled: set GROQ_API_KEY in the deployment environment.');
+}
 console.log('✓ All features loaded');
 
 // Track messages
@@ -451,9 +458,12 @@ app.post('/api/admin/restart', requireDashboardAdmin, (req, res) => {
     res.status(501).json({ error: 'Safe process restart is not configured for this deployment.' });
 });
 
-app.get('/dashboard', (req, res) => {
+function serveDashboard(req, res) {
     res.sendFile(path.join(dashboardPath, 'index.html'));
-});
+}
+
+// Dedicated dashboard endpoint. The root route remains available for backwards compatibility.
+app.get(['/dashboard', '/dashboard/'], serveDashboard);
 
 // Basic API/health endpoints
 app.get('/', (req, res) => {
@@ -476,6 +486,12 @@ app.get('/status', (req, res) => {
         totalMessagesSent: botStatus.totalMessagesSent,
         uptime: botStatus.connectedAt ? Math.floor((Date.now() - new Date(botStatus.connectedAt)) / 1000) : 0,
         nextScheduledUpdate: '9:00 PM IST',
+        ai: {
+            provider: groqVoice.getProviderName(),
+            configured: groqVoice.isConfigured(),
+            model: groqVoice.model,
+            voiceAvailable: !isCloudDeployment,
+        },
         timestamp: new Date().toISOString()
     });
 });

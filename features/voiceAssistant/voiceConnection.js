@@ -8,10 +8,51 @@ const {
     joinVoiceChannel,
     getVoiceConnection,
     VoiceConnectionStatus,
+    VoiceConnectionDisconnectReason,
     entersState
 } = require('@discordjs/voice');
 const { PermissionFlagsBits } = require('discord.js');
 const EventEmitter = require('events');
+
+/**
+ * Resilient waiter for VoiceConnection Ready status that doesn't instantly
+ * abort on transient handshake disconnects or region re-routes.
+ *
+ * @param {import('@discordjs/voice').VoiceConnection} connection
+ * @param {number} timeoutMs Max wait time in ms
+ * @returns {Promise<void>}
+ */
+function waitForReady(connection, timeoutMs = 25000) {
+    if (connection.state.status === VoiceConnectionStatus.Ready) {
+        return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+        let timer = null;
+
+        const onStateChange = (oldState, newState) => {
+            if (newState.status === VoiceConnectionStatus.Ready) {
+                cleanup();
+                resolve();
+            } else if (newState.status === VoiceConnectionStatus.Destroyed) {
+                cleanup();
+                reject(new Error('Voice connection was destroyed.'));
+            }
+        };
+
+        const cleanup = () => {
+            if (timer) clearTimeout(timer);
+            connection.off('stateChange', onStateChange);
+        };
+
+        timer = setTimeout(() => {
+            cleanup();
+            reject(new Error(`Voice connection timed out after ${timeoutMs / 1000}s (Current state: ${connection.state.status})`));
+        }, timeoutMs);
+
+        connection.on('stateChange', onStateChange);
+    });
+}
 
 class VoiceConnectionManager extends EventEmitter {
     constructor() {
@@ -92,8 +133,8 @@ class VoiceConnectionManager extends EventEmitter {
 
                 this._setupStateHandlers();
 
-                // Wait up to 20s for connection to transition to Ready
-                await entersState(this.connection, VoiceConnectionStatus.Ready, 20000);
+                // Wait up to 25s for connection to transition to Ready using resilient waiter
+                await waitForReady(this.connection, 25000);
                 console.log(`✓ Voice connection ready in channel: #${voiceChannel.name}`);
                 return this.connection;
             } catch (error) {
@@ -143,24 +184,28 @@ class VoiceConnectionManager extends EventEmitter {
 
         this.connection.on(VoiceConnectionStatus.Disconnected, async (oldState, newState) => {
             // Only handle unexpected disconnects if the connection was previously Ready.
-            // During initial connection handshakes, Discord may briefly transition states;
-            // prematurely destroying the connection here aborts the initial join!
             if (oldState.status !== VoiceConnectionStatus.Ready) {
                 return;
             }
 
-            console.warn(`Voice disconnected from channel: ${this.channel?.name}. Attempting reconnect...`);
+            console.warn(`[VoiceConnection] Disconnected from channel: ${this.channel?.name}. Attempting reconnect...`);
             try {
-                // If disconnected due to Discord voice server rotation, wait for Signalling/Connecting
-                await Promise.race([
-                    entersState(this.connection, VoiceConnectionStatus.Signalling, 5000),
-                    entersState(this.connection, VoiceConnectionStatus.Connecting, 5000)
-                ]);
-                // If it transitioned to reconnecting, wait for Ready
-                await entersState(this.connection, VoiceConnectionStatus.Ready, 15000);
-                console.log(`✓ Voice reconnected successfully in channel: ${this.channel?.name}`);
+                if (newState.reason === VoiceConnectionDisconnectReason.WebSocketClose && newState.closeCode === 4014) {
+                    // Discord 4014 close code indicates moved to another channel or kicked
+                    await Promise.race([
+                        entersState(this.connection, VoiceConnectionStatus.Signalling, 5000),
+                        entersState(this.connection, VoiceConnectionStatus.Connecting, 5000)
+                    ]);
+                    await waitForReady(this.connection, 15000);
+                } else if (this.connection.rejoinAttempts < 5) {
+                    await new Promise(r => setTimeout(r, (this.connection.rejoinAttempts + 1) * 500));
+                    this.connection.rejoin();
+                    await waitForReady(this.connection, 15000);
+                } else {
+                    this.leave();
+                }
             } catch (error) {
-                console.error('Reconnection failed, cleaning up voice connection.');
+                console.error('[VoiceConnection] Reconnection failed, releasing session:', error.message);
                 this.leave();
             }
         });

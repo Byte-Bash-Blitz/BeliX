@@ -179,6 +179,25 @@ function setupMentionHandler(client) {
                             voiceChannel = freshMember.voice.channel;
                         }
                     } catch (e) {}
+
+                    // Check if member is sitting in any voice channel in this server
+                    if (!voiceChannel) {
+                        for (const ch of message.guild.channels.cache.values()) {
+                            if ((ch.isVoiceBased?.() || ch.type === 2) && ch.members?.has(message.author.id)) {
+                                voiceChannel = ch;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Fallback to Belmonts default Common Hall voice room
+                    if (!voiceChannel && message.guild.id === (process.env.GUILD_ID || '1304848105975578634')) {
+                        const defaultVcId = process.env['voiceroom-Common-hall'] || '1304848107095326830';
+                        const defaultVc = message.guild.channels.cache.get(defaultVcId);
+                        if (defaultVc) {
+                            voiceChannel = defaultVc;
+                        }
+                    }
                 }
 
                 if (!voiceChannel) {

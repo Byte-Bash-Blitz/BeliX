@@ -106,10 +106,22 @@ async function handleVoiceInteraction(interaction) {
     try {
         switch (commandName) {
             case 'belix-join': {
-                const voiceChannel = member?.voice?.channel;
+                let voiceChannel = member?.voice?.channel;
+                if (!voiceChannel && guild) {
+                    for (const ch of guild.channels.cache.values()) {
+                        if ((ch.isVoiceBased?.() || ch.type === 2) && ch.members?.has(interaction.user.id)) {
+                            voiceChannel = ch;
+                            break;
+                        }
+                    }
+                    if (!voiceChannel && guild.id === (process.env.GUILD_ID || '1304848105975578634')) {
+                        const defaultVcId = process.env['voiceroom-Common-hall'] || '1304848107095326830';
+                        voiceChannel = guild.channels.cache.get(defaultVcId);
+                    }
+                }
                 if (!voiceChannel) {
                     return interaction.editReply({
-                        content: '⚠️ You must be connected to a voice channel to invite BeliX.'
+                        content: '⚠️ Modal-la oru voice channel-la join pannunga, illa Common hall voice room-ku invite pannunga.'
                     });
                 }
 

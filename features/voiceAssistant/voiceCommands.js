@@ -113,6 +113,21 @@ async function handleVoiceInteraction(interaction) {
                     });
                 }
 
+                // If running on Render, provide immediate clear guidance instead of hanging on blocked UDP
+                if (process.env.RENDER || process.env.RENDER_SERVICE_ID) {
+                    const embed = new EmbedBuilder()
+                        .setColor('#3498db')
+                        .setTitle('🎙️ BeliX Meeting Assistant (Render Cloud Mode)')
+                        .setDescription(`Active in **#${voiceChannel.name}**!\n\n` +
+                            `• ⏱️ **Meeting Attendance**: Actively tracking 45-minute attendance for all members in **#${voiceChannel.name}**.\n` +
+                            `• 💬 **Ask Doubts in Chat**: Mention \`@BeliX <question>\` anytime and I'll answer with full Tanglish AI memory!\n` +
+                            `• 🗣️ **Live Voice Audio**: Render's cloud servers restrict raw UDP microphone streaming. To have me speak aloud through the microphone during meetings, run BeliX locally with \`npm start\`.`)
+                        .setFooter({ text: 'BeliX Belmonts Clan Meeting Assistant • 24/7 Cloud Attendance Active' })
+                        .setTimestamp();
+
+                    return interaction.editReply({ embeds: [embed] });
+                }
+
                 // Check permissions
                 const permissions = voiceChannel.permissionsFor(interaction.client.user);
                 if (!permissions.has(PermissionFlagsBits.Connect) || !permissions.has(PermissionFlagsBits.Speak)) {
@@ -306,7 +321,7 @@ async function handleVoiceInteraction(interaction) {
                 let ttsError = null;
 
                 try {
-                    const ttsResult = await speechGenerator.generateSpeech('BeliX voice systems are operational and ready.');
+                    const ttsResult = await speechGenerator.generateSpeech('Vanakkam nanba! BeliX voice systems ellaam perfectly ready-ah irukku. Ungalukku enna tech doubt irundhaalum kelunga, naan voice-la answer panren.');
                     ttsSuccess = true;
                     ttsFormat = ttsResult.format;
                     ttsDuration = ttsResult.durationSec;
@@ -320,6 +335,8 @@ async function handleVoiceInteraction(interaction) {
                     ttsError = e.message;
                 }
 
+                const voiceInfo = speechGenerator.getVoiceInfo();
+
                 const resultEmbed = new EmbedBuilder()
                     .setColor(groqCheck.success && ttsSuccess ? '#2ecc71' : '#e74c3c')
                     .setTitle('🧪 BeliX System & Voice Diagnostic Results')
@@ -332,9 +349,9 @@ async function handleVoiceInteraction(interaction) {
                             inline: false
                         },
                         {
-                            name: '🗣️ Voice Synthesis (TTS)',
+                            name: `🗣️ Voice Synthesis (${voiceInfo.provider})`,
                             value: ttsSuccess
-                                ? `✅ Operational (Format: \`${ttsFormat.toUpperCase()}\`, Est: ${ttsDuration}s)`
+                                ? `✅ Operational (Format: \`${ttsFormat.toUpperCase()}\`, Voice: \`${voiceInfo.voiceId ? voiceInfo.voiceId.slice(0, 8) + '...' : 'Default'}\`, Est: ${ttsDuration}s)`
                                 : `❌ Failed: ${ttsError}`,
                             inline: false
                         },
@@ -434,4 +451,3 @@ module.exports = {
     getVoiceSlashCommands,
     handleVoiceInteraction
 };
-

@@ -59,6 +59,9 @@ class VoiceAudioReceiver extends EventEmitter {
         // If already capturing this user, let existing stream continue
         if (this.activeStreams.has(userId)) return;
 
+        // Cap concurrent streams to 2 to prevent event-loop starvation when multiple participants join/make noise
+        if (this.activeStreams.size >= 2) return;
+
         try {
             const opusStream = this.connection.receiver.subscribe(userId, {
                 end: {
@@ -107,6 +110,13 @@ class VoiceAudioReceiver extends EventEmitter {
         if (!streamData) return;
 
         this.activeStreams.delete(userId);
+
+        try {
+            streamData.decoder?.removeAllListeners();
+            streamData.opusStream?.removeAllListeners();
+            streamData.decoder?.destroy();
+            streamData.opusStream?.destroy();
+        } catch (e) {}
 
         const { chunks } = streamData;
         if (!chunks || chunks.length === 0) return;

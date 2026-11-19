@@ -60,7 +60,7 @@ class GroqVoice {
      */
     async _chatWithFallback(messages, max_tokens = 800, temperature = 0.6) {
         if (!this.groq) {
-            throw new Error('GROQ_API_KEY is not configured in .env file.');
+            throw new Error('GROQ_API_KEY is not configured in the environment.');
         }
 
         const candidateModels = [
@@ -115,7 +115,7 @@ class GroqVoice {
                 provider: 'Groq',
                 model: this.model,
                 latencyMs: 0,
-                message: 'GROQ_API_KEY is not configured in .env file.'
+                message: 'GROQ_API_KEY is not configured in the environment.'
             };
         }
 
@@ -193,7 +193,17 @@ CRITICAL: Speak directly. Do NOT use markdown symbols, asterisks, bullet points,
      * @param {string} conversationHistory Recent meeting dialogue
      * @returns {Promise<string>} Crisp spoken response in Tanglish (2-3 sentences max, zero markdown)
      */
-    async answerQuestion(question, speakerName = 'Participant', conversationHistory = '') {
+    /**
+     * Answers a participant's question or doubt in natural spoken Tanglish.
+     * Incorporates previous conversation turns, recognized speaker memory, and channel chat context.
+     *
+     * @param {string} question The question asked
+     * @param {string} speakerName Name of the person asking
+     * @param {string} conversationHistory Recent meeting or text turns
+     * @param {object} extraContext Additional context (channelRecentChat, speakerProfile, etc.)
+     * @returns {Promise<string>} Direct spoken Tanglish answer
+     */
+    async answerQuestion(question, speakerName = 'Participant', conversationHistory = '', extraContext = {}) {
         if (!this.isConfigured()) {
             return `Unga question "${question}" vandhuchu, aana GROQ_API_KEY bot config-la illai. Please add pannunga.`;
         }
@@ -215,17 +225,22 @@ CRITICAL: Speak directly. Do NOT use markdown symbols, asterisks, bullet points,
             console.warn('Member inquiry check error in answerQuestion:', memberErr.message);
         }
 
-        const prompt = `Meeting Context:
-Participant: "${speakerName}" has called you and asked this question:
+        const speakerBio = extraContext.speakerProfile ? `Speaker Profile Knowledge: ${extraContext.speakerProfile.fullName} (${extraContext.speakerProfile.clanDesignation || 'Belmonts Clan Member'})${extraContext.speakerProfile.bio ? ' - ' + extraContext.speakerProfile.bio : ''}` : '';
+        const recentChatContext = extraContext.channelRecentChat ? `Recent Channel Chat History (what participants were discussing):\n${extraContext.channelRecentChat}` : '';
+
+        const prompt = `Context:
+${speakerBio ? speakerBio + '\n' : ''}Participant: "${speakerName}" has called you and asked this question:
 "${question}"
 
-Recent Meeting Turns:
+${recentChatContext ? recentChatContext + '\n' : ''}Previous Conversation Memory with BeliX:
 ${conversationHistory || 'None yet.'}
 
-Provide a direct, conversational, natural voice answer in Tanglish.
-STRICT LANGUAGE REQUIREMENT:
-You must speak ONLY in natural, fluent Tanglish (Tamil words written in English letters / Latin alphabet mixed with English technical terms).
-Never reply in pure English. Never use Tamil unicode script. Use everyday spoken Tamil words in English script (e.g. "pa", "na", "ithu", "panna use aagum", "simple-ah sollanum na").
+Provide a direct, conversational, natural answer in Tanglish.
+You know this participant and remember previous conversation context. Speak to them warmly and intelligently like a helpful teammate who remembers everything!
+MANDATORY LANGUAGE REQUIREMENT:
+Even if the participant asked their question in English, you MUST speak and reply ONLY in natural, conversational Tanglish (Tamil words written in English letters / Latin script mixed with English tech terms).
+NEVER reply in English. NEVER use Tamil Unicode script.
+Always use everyday spoken Tamil words in English script (e.g. "pa", "bro", "na", "ithu", "panna use aagum", "simple-ah sollanum na", "eduthukkitta").
 
 RULES:
 1. 2 to 3 sentences maximum.

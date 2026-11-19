@@ -78,6 +78,10 @@ class VoiceSession {
             this.textChannel.send({ embeds: [embed] }).catch(err => console.warn('Could not send session embed:', err.message));
         }
 
+        // Brief 500ms stabilization buffer to let UDP hole-punching and Discord voice
+        // connection settle completely before transmitting audio, preventing initial voice stutter/breaking
+        await new Promise(resolve => setTimeout(resolve, 500));
+
         // Generate and play introduction audio
         this._playIntroduction();
     }

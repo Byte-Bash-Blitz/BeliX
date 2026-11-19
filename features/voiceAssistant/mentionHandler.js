@@ -181,64 +181,37 @@ function setupMentionHandler(client) {
                     } catch (e) {}
                 }
 
-                if (!voiceChannel) {
-                    return await message.reply('⚠️ Please modal-la oru voice channel-la join pannunga (illa voice channel chat-kulla **`join`** nu sollunga), appo thaan naan join panna mudiyum!');
-                }
+            if (!voiceChannel) {
+                return message.reply('⚠️ Please join a voice channel first, then mention me with **join** (e.g., `@BeliX join`) so I know which channel to join!');
+            }
 
-                // If running on Render, inform users immediately with attendance & doubt help instead of hanging on blocked UDP
-                if (process.env.RENDER || process.env.RENDER_SERVICE_ID) {
-                    const embed = new EmbedBuilder()
-                        .setColor('#3498db')
-                        .setTitle('🎙️ BeliX Meeting Assistant (Render Cloud Mode)')
-                        .setDescription(`Active in **#${voiceChannel.name}**!\n\n` +
-                            `• ⏱️ **Meeting Attendance**: #${voiceChannel.name}-la irukura members-oda 45-minute attendance track aagudhu.\n` +
-                            `• 💬 **Chat-la Doubts**: \`@BeliX <unga doubt>\` mention pannunga, Tanglish AI memory-oda reply panren!\n` +
-                            `• 🗣️ **Live Voice Audio**: Render cloud servers raw UDP packets restrict panradhala, microphone moolama naan direct-ah pesa local-la \`npm start\` run pannunga.`)
-                        .setFooter({ text: 'BeliX Belmonts Clan Meeting Assistant • 24/7 Cloud Attendance Active' })
-                        .setTimestamp();
+            // Check bot permissions in voice channel
+            const permissions = voiceChannel.permissionsFor(client.user);
+            if (!permissions.has(PermissionFlagsBits.Connect) || !permissions.has(PermissionFlagsBits.Speak)) {
+                return message.reply(`❌ I don't have permission to **Connect** or **Speak** in **${voiceChannel.name}**. Please check my channel permissions.`);
+            }
 
-                    return await message.reply({ embeds: [embed] });
-                }
-
-                // Check if already in this channel
-                const existingSession = voiceSessionManager.getSession(message.guild.id);
-                if (existingSession && existingSession.voiceChannel.id === voiceChannel.id) {
-                    return await message.reply(`🎙️ Naan already **${voiceChannel.name}**-la connected-ah irukken! Voice-la **"Hey BeliX"** nu kelunga, illa chat-la doubt kelunga!`);
-                }
-
-                // Check bot permissions in voice channel
-                const permissions = voiceChannel.permissionsFor(client.user);
-                if (permissions && (!permissions.has(PermissionFlagsBits.Connect) || !permissions.has(PermissionFlagsBits.Speak))) {
-                    return await message.reply(`❌ Enakku **${voiceChannel.name}**-la **Connect** or **Speak** permission illai. Channel permissions check pannunga.`);
-                }
-
-                const statusMsg = await message.reply(`🎙️ **${voiceChannel.name}**-kulla join aaguren...`);
+            const statusMsg = await message.reply(`🎙️ Joining **${voiceChannel.name}**...`);
 
                 try {
                     const session = await voiceSessionManager.joinSession(client, voiceChannel, message.channel);
 
-                    const embed = new EmbedBuilder()
-                        .setColor('#2ecc71')
-                        .setTitle('🎙️ BeliX Voice Channel-la Connect Aayiduchu')
-                        .setDescription(`Connected to **${voiceChannel.name}**!\nEn voice intro ippo play aagum.`)
-                        .addFields(
-                            { name: '🗣️ Voice-la', value: '**"Hey BeliX"** or **"Hey bro"** nu start panni doubt kelunga.', inline: true },
-                            { name: '💬 Chat-la', value: '`@BeliX <question>` mention pannunga, voice-la answer panren!', inline: true },
-                            { name: '👋 Leave', value: 'Disconnect panna `@BeliX leave` nu sollunga', inline: true }
-                        )
-                        .setFooter({ text: 'BeliX Real-Time Voice Meeting Assistant' })
-                        .setTimestamp();
+                const embed = new EmbedBuilder()
+                    .setColor('#2ecc71')
+                    .setTitle('🎙️ BeliX Joined Voice Channel')
+                    .setDescription(`Connected to **${voiceChannel.name}**!\nI'll introduce myself in voice momentarily.`)
+                    .addFields(
+                        { name: '🗣️ In Voice', value: 'Say **"Hey BeliX"** followed by your question.', inline: true },
+                        { name: '💬 In Chat', value: 'Mention `@BeliX <question>` and I\'ll answer by voice!', inline: true },
+                        { name: '👋 Leave', value: 'Mention `@BeliX leave` to disconnect', inline: true }
+                    )
+                    .setFooter({ text: 'BeliX Real-Time Voice Meeting Assistant' })
+                    .setTimestamp();
 
-                    await statusMsg.edit({ content: null, embeds: [embed] });
-                } catch (error) {
-                    console.error('Error joining via mention:', error);
-                    await statusMsg.edit({ content: `❌ **${voiceChannel.name}**-la join panna mudiyala: ${error.message}` });
-                }
-            } catch (err) {
-                console.error('Unhandled error in join handler:', err);
-                try {
-                    await message.reply(`❌ Join request process panna mudiyala: ${err.message}`);
-                } catch (e) {}
+                await statusMsg.edit({ content: null, embeds: [embed] });
+            } catch (error) {
+                console.error('Error joining via mention:', error);
+                await statusMsg.edit({ content: `❌ Failed to join **${voiceChannel.name}**: ${error.message}` });
             }
             return;
         }
@@ -307,23 +280,11 @@ function setupMentionHandler(client) {
         }
 
         // 7. USER ASKS A DOUBT / QUESTION VIA CHAT MENTION!
-        const session = voiceSessionManager.getSession(message.guild.id);
-        const shouldReplyByVoice = Boolean(session && !session.isMuted);
+        // BeliX generates the answer and REPLIES BY NATURAL VOICE in the meeting channel!
+        let session = voiceSessionManager.getSession(message.guild.id);
 
-        let thinkingMsg = null;
-        try {
-            thinkingMsg = await message.reply(
-                shouldReplyByVoice
-                    ? `🎙️ *Yosikkiren... #${session.voiceChannel.name}-la voice and chat-la answer panren!*`
-                    : '💬 *Yosikkiren... chat and memory analyze panren!*'
-            );
-        } catch (e) {
-            console.warn('Thinking reply failed:', e.message);
-        }
-
-        try {
-            // 🧠 Analyze recent channel chat messages (Memory of recent discussions)
-            let channelRecentChat = '';
+        // If BeliX is not yet in a voice channel, but the asking member is in one, auto-join!
+        if (!session && message.member?.voice?.channel) {
             try {
                 const recentMessages = await message.channel.messages.fetch({ limit: 10, before: message.id });
                 const formatted = [];
@@ -517,9 +478,8 @@ function setupMentionHandler(client) {
                 // Not in a voice channel: Reply directly in text chat with memory context!
                 const embed = new EmbedBuilder()
                     .setColor('#3498db')
-                    .setAuthor({ name: `${speakerName} ketadhu:` })
-                    .setDescription(`**"${cleanText}"**\n\n💬 **BeliX:**\n${replyText}`)
-                    .setFooter({ text: 'BeliX AI Assistant • Natural Tanglish Memory' })
+                    .setAuthor({ name: `${speakerName} asked:` })
+                    .setDescription(`**"${cleanText}"**\n\n💬 **BeliX:**\n${replyText}\n\n💡 *Tip: Join a voice channel and mention \`@BeliX join\` to hear me speak my answers aloud in voice!*`)
                     .setTimestamp();
 
                 if (thinkingMsg) {
